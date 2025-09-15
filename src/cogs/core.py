@@ -318,20 +318,28 @@ class Core(commands.Cog):
         view = Paginator(pages, interaction.user.id, timeout=120, files=files)
         await view.send(interaction)
 
-    @app_commands.command(name="market", description="Show the service market (auto-refreshes every 5 minutes)")
-    async def market(self, interaction: discord.Interaction):
+    @app_commands.command(name="market", description="Show the service market (auto-refreshes every 5 minutes). Optionally specify a level")
+    @app_commands.describe(level="Optional market level override")
+    async def market(self, interaction: discord.Interaction, level: int | None = None):
         uid = interaction.user.id
         pl = load_player(uid)
         if not pl:
             await interaction.response.send_message("Use /start first.", ephemeral=True)
             return
 
-        m = refresh_market_if_stale(uid, max_age_sec=300)
+        max_lvl = market_level_from_rep(pl.reputation)
+        if level is not None:
+            if not (0 <= level <= max_lvl):
+                await interaction.response.send_message(
+                    f"Level must be between 0 and {max_lvl}.", ephemeral=True
+                )
+                return
+
+        m = refresh_market_if_stale(uid, max_age_sec=300, forced_level=level)
 
         def build_market_embed(market):
-            lvl = market_level_from_rep(pl.reputation)
             embed = discord.Embed(
-                title=f"{EMOJI_MARKET} Service Market — Lv{lvl}",
+                title=f"{EMOJI_MARKET} Service Market — Lv{market.level}",
                 color=0x34D399
             )
             if not market.jobs:
@@ -346,25 +354,24 @@ class Core(commands.Cog):
             return embed
 
         class MarketView(discord.ui.View):
-            def __init__(self, market, invoker_id):
+            def __init__(self, market, invoker_id, level):
                 super().__init__(timeout=60)
                 self.market = market
                 self.invoker_id = invoker_id
+                self.level = level
 
             @discord.ui.button(label="Refresh", style=discord.ButtonStyle.primary, emoji="🔄")
             async def refresh(self, interaction2: discord.Interaction, button: discord.ui.Button):
                 if interaction2.user.id != self.invoker_id:
                     await interaction2.response.send_message("This isn't your view.", ephemeral=True)
                     return
-                # force refresh (rep might have changed)
-                m2 = refresh_market_if_stale(uid, max_age_sec=0)
-                # re-read player to ensure reputation is current
-                p2 = load_player(uid) or pl
+                # force refresh, keeping selected level
+                m2 = refresh_market_if_stale(uid, max_age_sec=0, forced_level=self.level)
                 embed2 = build_market_embed(m2)
-                await interaction2.response.edit_message(embed=embed2, view=MarketView(m2, self.invoker_id))
+                await interaction2.response.edit_message(embed=embed2, view=MarketView(m2, self.invoker_id, self.level))
 
         embed = build_market_embed(m)
-        await interaction.response.send_message(embed=embed, view=MarketView(m, uid), ephemeral=True)
+        await interaction.response.send_message(embed=embed, view=MarketView(m, uid, level), ephemeral=True)
 
     @app_commands.command(name="work", description="Do a market job with a selected girl")
     @app_commands.describe(job_id="Job ID, e.g. J1", girl_id="Girl UID, e.g. g001#1234")

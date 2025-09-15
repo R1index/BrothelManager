@@ -226,12 +226,13 @@ def load_market(uid: int) -> Optional[Market]:
     raw = _read_json(_market_path(uid))
     return Market(**raw) if raw else None
 
-def generate_market(uid: int, jobs_count: int = 5) -> Market:
+def generate_market(uid: int, jobs_count: int = 5, forced_level: int | None = None) -> Market:
     """
     Generate market based on player's reputation → market level.
+    Optional forced_level overrides the reputation-based level.
     """
     pl = load_player(uid)  # fixed: no self-import
-    lvl = market_level_from_rep(pl.reputation if pl else 0)
+    lvl = forced_level if forced_level is not None else market_level_from_rep(pl.reputation if pl else 0)
 
     jobs: List[Job] = []
     for i in range(jobs_count):
@@ -249,16 +250,18 @@ def generate_market(uid: int, jobs_count: int = 5) -> Market:
             pay=pay,
             difficulty=random.randint(1, 3),
         ))
-    return Market(user_id=uid, jobs=jobs)
+    return Market(user_id=uid, jobs=jobs, level=lvl)
 
-def refresh_market_if_stale(uid: int, max_age_sec: int = 300) -> Market:
+def refresh_market_if_stale(uid: int, max_age_sec: int = 300, forced_level: int | None = None) -> Market:
     """
     Return cached market if it's fresh enough; otherwise regenerate & save.
     If max_age_sec == 0 → force refresh.
+    forced_level forces a specific market level.
     """
     m = load_market(uid)
-    if not m or max_age_sec == 0 or (time.time() - m.ts) > max_age_sec:
-        m = generate_market(uid)
+    if (not m or max_age_sec == 0 or (time.time() - m.ts) > max_age_sec or
+            (forced_level is not None and m.level != forced_level)):
+        m = generate_market(uid, forced_level=forced_level)
         m.ts = int(time.time())
         save_market(m)
     return m
