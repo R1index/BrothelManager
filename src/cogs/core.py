@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
@@ -318,9 +319,9 @@ class Core(commands.Cog):
         view = Paginator(pages, interaction.user.id, timeout=120, files=files)
         await view.send(interaction)
 
-    @app_commands.command(name="market", description="Show the service market (auto-refreshes every 5 minutes)")
     @app_commands.describe(level="Force market level (0..max)")
-    async def market(self, interaction: discord.Interaction, level: int | None = None):
+    @app_commands.command(name="market", description="Show the service market (auto-refreshes every 5 minutes)")
+    async def market(self, interaction: discord.Interaction, level: Optional[int] = None):
         uid = interaction.user.id
         pl = load_player(uid)
         if not pl:
