@@ -27,7 +27,9 @@ class Admin(commands.Cog):
             await interaction.response.send_message(f"Synced {len(synced)} commands for guild {guild_id}.", ephemeral=True)
         else:
             synced = await self.bot.tree.sync()
-            await interaction.response.send_message(f"Globally synced {len(synced)} команд.", ephemeral=True)
+            await interaction.response.send_message(
+                f"Globally synced {len(synced)} commands.", ephemeral=True
+            )
 
     @app_commands.command(name="invite", description="Get bot invite link (applications.commands + bot)")
     async def invite(self, interaction: discord.Interaction):

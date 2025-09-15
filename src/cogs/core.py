@@ -359,15 +359,17 @@ class Core(commands.Cog):
             return
         m = load_market(uid)
         if not m:
-            await interaction.response.send_message("Generate the market first with /market.", ephemeral=True)
+            await interaction.response.send_message(
+                "Use /market to generate the market first.", ephemeral=True
+            )
             return
         job = next((j for j in m.jobs if j.job_id == job_id), None)
         if not job:
-            await interaction.response.send_message("Invalid job_id.", ephemeral=True)
+            await interaction.response.send_message("Invalid job ID.", ephemeral=True)
             return
         girl = pl.get_girl(girl_id)
         if not girl:
-            await interaction.response.send_message("Invalid girl_id.", ephemeral=True)
+            await interaction.response.send_message("Invalid girl ID.", ephemeral=True)
             return
 
         result = resolve_job(pl, job, girl)
