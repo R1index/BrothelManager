@@ -1,0 +1,288 @@
+{
+  "catalog_version": 2,
+  "girls": [
+    {
+      "id": "g001",
+      "name": "Aria",
+      "rarity": "R",
+      "image_url": "https://placehold.co/400x600?text=Aria",
+      "bio": {
+        "age": 20,
+        "height_cm": 165,
+        "weight_kg": 53,
+        "breast_size": "flat",
+        "body_shape": "slim",
+        "traits": [
+          "birthmark on thigh"
+        ]
+      },
+      "pregnant": false,
+      "prefs": {
+        "skills": {
+          "Human": "true",
+          "Insect": "false",
+          "Beast": "false",
+          "Monster": "false"
+        },
+        "subskills": {
+          "VAGINAL": "true",
+          "ANAL": "false",
+          "ORAL": "false",
+          "BREAST": "false"
+        }
+      },
+      "base": {
+        "level": 0,
+        "skills": {
+          "Human": {
+            "level": 0,
+            "xp": 0
+          },
+          "Insect": {
+            "level": 0,
+            "xp": 0
+          },
+          "Beast": {
+            "level": 0,
+            "xp": 0
+          },
+          "Monster": {
+            "level": 0,
+            "xp": 0
+          }
+        },
+        "subskills": {
+          "VAGINAL": {
+            "level": 0,
+            "xp": 0
+          },
+          "ANAL": {
+            "level": 0,
+            "xp": 0
+          },
+          "ORAL": {
+            "level": 0,
+            "xp": 0
+          },
+          "BREAST": {
+            "level": 0,
+            "xp": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "g002",
+      "name": "Nyx",
+      "rarity": "R",
+      "image_url": "https://placehold.co/400x600?text=Nyx",
+      "bio": {
+        "age": 22,
+        "height_cm": 168,
+        "weight_kg": 55,
+        "breast_size": "flat",
+        "body_shape": "slim",
+        "traits": [
+          "freckles",
+          "scar on shoulder"
+        ]
+      },
+      "pregnant": false,
+      "prefs": {
+        "skills": {
+          "Human": "true",
+          "Insect": "false",
+          "Beast": "false",
+          "Monster": "false"
+        },
+        "subskills": {
+          "VAGINAL": "false",
+          "ANAL": "false",
+          "ORAL": "false",
+          "BREAST": "false"
+        }
+      },
+      "base": {
+        "level": 0,
+        "skills": {
+          "Human": {
+            "level": 0,
+            "xp": 0
+          },
+          "Insect": {
+            "level": 0,
+            "xp": 0
+          },
+          "Beast": {
+            "level": 0,
+            "xp": 0
+          },
+          "Monster": {
+            "level": 0,
+            "xp": 0
+          }
+        },
+        "subskills": {
+          "VAGINAL": {
+            "level": 0,
+            "xp": 0
+          },
+          "ANAL": {
+            "level": 0,
+            "xp": 0
+          },
+          "ORAL": {
+            "level": 0,
+            "xp": 0
+          },
+          "BREAST": {
+            "level": 0,
+            "xp": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "g003",
+      "name": "Lyra",
+      "rarity": "R",
+      "image_url": "https://placehold.co/400x600?text=Lyra",
+      "bio": {
+        "age": 21,
+        "height_cm": 165,
+        "weight_kg": 50,
+        "breast_size": "flat",
+        "body_shape": "slim",
+        "traits": [
+          "mole under eye",
+          "soft voice"
+        ]
+      },
+      "pregnant": false,
+      "prefs": {
+        "skills": {
+          "Human": "true",
+          "Insect": "false",
+          "Beast": "false",
+          "Monster": "false"
+        },
+        "subskills": {
+          "VAGINAL": "true",
+          "ANAL": "false",
+          "ORAL": "false",
+          "BREAST": "false"
+        }
+      },
+      "base": {
+        "level": 0,
+        "skills": {
+          "Human": {
+            "level": 0,
+            "xp": 0
+          },
+          "Insect": {
+            "level": 0,
+            "xp": 0
+          },
+          "Beast": {
+            "level": 0,
+            "xp": 0
+          },
+          "Monster": {
+            "level": 0,
+            "xp": 0
+          }
+        },
+        "subskills": {
+          "VAGINAL": {
+            "level": 0,
+            "xp": 0
+          },
+          "ANAL": {
+            "level": 0,
+            "xp": 0
+          },
+          "ORAL": {
+            "level": 0,
+            "xp": 0
+          },
+          "BREAST": {
+            "level": 0,
+            "xp": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "g004",
+      "name": "Mira",
+      "rarity": "R",
+      "image_url": "https://placehold.co/400x600?text=Mira",
+      "bio": {
+        "age": 21,
+        "height_cm": 167,
+        "weight_kg": 50,
+        "breast_size": "flat",
+        "body_shape": "slim",
+        "traits": [
+          "piercing",
+          "beauty mark"
+        ]
+      },
+      "pregnant": false,
+      "prefs": {
+        "skills": {
+          "Human": "true",
+          "Insect": "false",
+          "Beast": "false",
+          "Monster": "false"
+        },
+        "subskills": {
+          "VAGINAL": "true",
+          "ANAL": "false",
+          "ORAL": "false",
+          "BREAST": "false"
+        }
+      },
+      "base": {
+        "level": 0,
+        "skills": {
+          "Human": {
+            "level": 0,
+            "xp": 0
+          },
+          "Insect": {
+            "level": 0,
+            "xp": 0
+          },
+          "Beast": {
+            "level": 0,
+            "xp": 0
+          },
+          "Monster": {
+            "level": 0,
+            "xp": 0
+          }
+        },
+        "subskills": {
+          "VAGINAL": {
+            "level": 0,
+            "xp": 0
+          },
+          "ANAL": {
+            "level": 0,
+            "xp": 0
+          },
+          "ORAL": {
+            "level": 0,
+            "xp": 0
+          },
+          "BREAST": {
+            "level": 0,
+            "xp": 0
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "discord": {
+    "token": "",
+    "guild_id": ""
+  },
+  "paths": {
+    "data_dir": "./data/users",
+    "catalog": "./data/girls_catalog.json",
+    "assets": "./assets/girls"
+  },
+  "gacha": {
+    "roll_cost": 100,
+    "starter_coins": 500,
+    "starter_girl_id": "g001"
+  },
+  "market": {
+    "refresh_minutes": 5,
+    "jobs_per_level": 5
+  }
+}
