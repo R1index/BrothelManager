@@ -220,7 +220,7 @@ def _market_path(uid: int) -> str:
     return os.path.join(MARKET_DIR, f"{uid}.json")
 
 def save_market(m: Market):
-    _write_json(_market_path(m.user_id), json.loads(m.model_dump_json()))
+    _write_json(_market_path(m.user_id), m.model_dump(mode="json"))
 
 def load_market(uid: int) -> Optional[Market]:
     raw = _read_json(_market_path(uid))
