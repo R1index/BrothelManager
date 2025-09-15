@@ -227,11 +227,17 @@ def load_market(uid: int) -> Optional[Market]:
     return Market(**raw) if raw else None
 
 def generate_market(uid: int, jobs_count: int = 5, forced_level: int | None = None) -> Market:
+    """Generate market jobs.
+
+    If ``forced_level`` is provided, it overrides the reputation-based level
+    and is persisted with the market.
     """
-    Generate market based on player's reputation → market level.
-    """
-    pl = load_player(uid)  # fixed: no self-import
-    lvl = forced_level if forced_level is not None else market_level_from_rep(pl.reputation if pl else 0)
+    pl = load_player(uid)
+    lvl = (
+        max(0, forced_level)
+        if forced_level is not None
+        else market_level_from_rep(pl.reputation if pl else 0)
+    )
 
     jobs: List[Job] = []
     for i in range(jobs_count):
