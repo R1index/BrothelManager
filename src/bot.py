@@ -2,10 +2,6 @@ import os
 import json
 import discord
 from discord.ext import commands
-from discord import app_commands
-
-from .cogs import core, admin
-
 
 def load_config():
     """Load config.json (must exist in project root)."""
