@@ -217,6 +217,8 @@ class Market(BaseModel):
     user_id: int
     jobs: List[Job] = Field(default_factory=list)
     ts: int = Field(default_factory=now_ts)
+    level: int = 0
+    forced_level: int | None = None
 
 class Player(BaseModel):
     reputation: int = 0

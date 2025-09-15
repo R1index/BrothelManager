@@ -319,19 +319,25 @@ class Core(commands.Cog):
         await view.send(interaction)
 
     @app_commands.command(name="market", description="Show the service market (auto-refreshes every 5 minutes)")
-    async def market(self, interaction: discord.Interaction):
+    @app_commands.describe(level="Force market level (0..max)")
+    async def market(self, interaction: discord.Interaction, level: int | None = None):
         uid = interaction.user.id
         pl = load_player(uid)
         if not pl:
             await interaction.response.send_message("Use /start first.", ephemeral=True)
             return
+        max_lvl = market_level_from_rep(pl.reputation)
+        if level is not None and (level < 0 or level > max_lvl):
+            await interaction.response.send_message(
+                f"Level must be between 0 and {max_lvl}.", ephemeral=True
+            )
+            return
 
-        m = refresh_market_if_stale(uid, max_age_sec=300)
+        m = refresh_market_if_stale(uid, max_age_sec=0 if level is not None else 300, forced_level=level)
 
-        def build_market_embed(market):
-            lvl = market_level_from_rep(pl.reputation)
+        def build_market_embed(market, max_lvl):
             embed = discord.Embed(
-                title=f"{EMOJI_MARKET} Service Market — Lv{lvl}",
+                title=f"{EMOJI_MARKET} Service Market — Lv{market.level} (max {max_lvl})",
                 color=0x34D399
             )
             if not market.jobs:
@@ -357,13 +363,14 @@ class Core(commands.Cog):
                     await interaction2.response.send_message("This isn't your view.", ephemeral=True)
                     return
                 # force refresh (rep might have changed)
-                m2 = refresh_market_if_stale(uid, max_age_sec=0)
+                m2 = refresh_market_if_stale(uid, max_age_sec=0, forced_level=self.market.forced_level)
                 # re-read player to ensure reputation is current
                 p2 = load_player(uid) or pl
-                embed2 = build_market_embed(m2)
+                max_lvl2 = market_level_from_rep(p2.reputation)
+                embed2 = build_market_embed(m2, max_lvl2)
                 await interaction2.response.edit_message(embed=embed2, view=MarketView(m2, self.invoker_id))
 
-        embed = build_market_embed(m)
+        embed = build_market_embed(m, max_lvl)
         await interaction.response.send_message(embed=embed, view=MarketView(m, uid), ephemeral=True)
 
     @app_commands.command(name="work", description="Do a market job with a selected girl")
