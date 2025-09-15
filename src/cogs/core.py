@@ -11,7 +11,7 @@ from ..storage import (
 from ..models import (
     RARITY_COLORS, make_bar, skill_xp_threshold, get_level, get_xp, market_level_from_rep
 )
-from ..assets_util import profile_image_path, action_image_path, pregnant_profile_image_path
+from ..assets_util import profile_image_path
 
 EMOJI_COIN = "🪙"
 EMOJI_SPARK = "✨"
@@ -252,12 +252,8 @@ class Core(commands.Cog):
                 color=0x9CA3AF
             )
 
-            # prefer pregnant art if pregnant, fallback to regular profile
-            img_path = None
-            if g.pregnant:
-                img_path = pregnant_profile_image_path(g.name, g.base_id)
-            if not img_path:
-                img_path = profile_image_path(g.name, g.base_id)
+            # prefer local profile art if present
+            img_path = profile_image_path(g.name, g.base_id)
 
             if img_path and os.path.exists(img_path):
                 em.set_image(url=f"attachment://{os.path.basename(img_path)}")
@@ -403,14 +399,9 @@ class Core(commands.Cog):
             save_market(m)
             save_player(pl)
 
-            # build success embed + optional local action image
+            # build success embed
             em = discord.Embed(description=f"{EMOJI_OK} Success! Reward: {EMOJI_COIN} **{result['reward']}**")
-            img = action_image_path(girl.name, girl.base_id, job.demand_main, getattr(job, 'demand_sub', ''))
-            if img and os.path.exists(img):
-                em.set_image(url=f"attachment://{os.path.basename(img)}")
-                await interaction.response.send_message(embed=em, file=discord.File(img))
-            else:
-                await interaction.response.send_message(embed=em)
+            await interaction.response.send_message(embed=em)
         else:
             save_player(pl)
             await interaction.response.send_message(f"{EMOJI_X} {result['reason']}. Failure (no pay).", ephemeral=True)
