@@ -106,12 +106,16 @@ class Core(commands.Cog):
         """Refresh all users' markets every 5 minutes by scanning data/users directory."""
         try:
             from ..storage import USERS_DIR
-            for fname in os.listdir(USERS_DIR):
-                if not fname.endswith(".json"):
-                    continue
-                uid = int(fname[:-5])
-                # force refresh to keep market in sync with reputation-based level
-                refresh_market_if_stale(uid, max_age_sec=0)
+            with os.scandir(USERS_DIR) as it:
+                for entry in it:
+                    if not entry.name.endswith(".json"):
+                        continue
+                    try:
+                        uid = int(entry.name[:-5])
+                    except ValueError:
+                        continue
+                    # force refresh to keep market in sync with reputation-based level
+                    refresh_market_if_stale(uid, max_age_sec=0)
         except Exception as e:
             print("[market_refresher] error:", e)
 
