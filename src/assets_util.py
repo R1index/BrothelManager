@@ -43,7 +43,8 @@ def action_image_path(girl_name: str, base_id: str, main_skill: str, sub_skill: 
       assets/girls/<name>/<main>/<sub>.png
       fallback: assets/girls/<base_id>/<main>/<sub>.png
 
-    where <main> ∈ human|insect|beast|monster, <sub> ∈ anal|vaginal|oral|breast
+    where <main> ∈ human|insect|beast|monster,
+          <sub> ∈ anal|vaginal|oral|breast|hand|foot|toy
     """
     name_slug = _slug(girl_name)
     base_slug = _slug(base_id) if base_id else None

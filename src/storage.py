@@ -71,11 +71,16 @@ def load_player(uid: int) -> Optional[Player]:
     # --- migration of legacy skills structure (ints -> {'level','xp'}) ---
     girls = raw.get("girls", [])
     for g in girls:
-        # normalize skills only if any value is int (legacy)
-        if g.get("skills") and any(isinstance(v, int) for v in g["skills"].values()):
-            g["skills"] = normalize_skill_map(g.get("skills", {}))
-        if g.get("subskills") and any(isinstance(v, int) for v in g["subskills"].values()):
-            g["subskills"] = normalize_skill_map(g.get("subskills", {}))
+        # normalize skills/subskills (always) to ensure new entries exist
+        skills_raw = g.get("skills") or {}
+        if not isinstance(skills_raw, dict):
+            skills_raw = {}
+        g["skills"] = normalize_skill_map(skills_raw)
+
+        subskills_raw = g.get("subskills") or {}
+        if not isinstance(subskills_raw, dict):
+            subskills_raw = {}
+        g["subskills"] = normalize_skill_map(subskills_raw)
 
         # normalize preferences maps if present
         g["prefs_skills"]    = normalize_prefs(g.get("prefs_skills", {}), MAIN_SKILLS)
