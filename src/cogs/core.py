@@ -26,13 +26,14 @@ EMOJI_X = "❌"
 # Paginator that supports per-page local file attachments (paths)
 # -----------------------------------------------------------------------------
 class Paginator(discord.ui.View):
-    def __init__(self, pages, timeout: float = 120.0, files=None):
+    def __init__(self, pages, invoker_id, timeout: float = 120.0, files=None):
         """
         pages: list[discord.Embed]
         files: list[str | None]  -> absolute paths to local files or None
         """
         super().__init__(timeout=timeout)
         self.pages = pages
+        self.invoker_id = invoker_id
         self.index = 0
         self.page_paths = files or [None] * len(pages)
         self._update_buttons()
@@ -65,12 +66,18 @@ class Paginator(discord.ui.View):
 
     @discord.ui.button(label="⏮", style=discord.ButtonStyle.secondary)
     async def first_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.invoker_id:
+            await interaction.response.send_message("This isn't your view.", ephemeral=True)
+            return
         self.index = 0
         self._update_buttons()
         await self._edit_page(interaction)
 
     @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary)
     async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.invoker_id:
+            await interaction.response.send_message("This isn't your view.", ephemeral=True)
+            return
         if self.index > 0:
             self.index -= 1
         self._update_buttons()
@@ -78,6 +85,9 @@ class Paginator(discord.ui.View):
 
     @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary)
     async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.invoker_id:
+            await interaction.response.send_message("This isn't your view.", ephemeral=True)
+            return
         if self.index < len(self.pages) - 1:
             self.index += 1
         self._update_buttons()
@@ -85,6 +95,9 @@ class Paginator(discord.ui.View):
 
     @discord.ui.button(label="⏭", style=discord.ButtonStyle.secondary)
     async def last_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.invoker_id:
+            await interaction.response.send_message("This isn't your view.", ephemeral=True)
+            return
         self.index = len(self.pages) - 1
         self._update_buttons()
         await self._edit_page(interaction)
@@ -302,7 +315,7 @@ class Core(commands.Cog):
             pages.append(em)
 
         save_player(pl)
-        view = Paginator(pages, timeout=120, files=files)
+        view = Paginator(pages, interaction.user.id, timeout=120, files=files)
         await view.send(interaction)
 
     @app_commands.command(name="market", description="Show the service market (auto-refreshes every 5 minutes)")
@@ -333,21 +346,25 @@ class Core(commands.Cog):
             return embed
 
         class MarketView(discord.ui.View):
-            def __init__(self, market):
+            def __init__(self, market, invoker_id):
                 super().__init__(timeout=60)
                 self.market = market
+                self.invoker_id = invoker_id
 
             @discord.ui.button(label="Refresh", style=discord.ButtonStyle.primary, emoji="🔄")
             async def refresh(self, interaction2: discord.Interaction, button: discord.ui.Button):
+                if interaction2.user.id != self.invoker_id:
+                    await interaction2.response.send_message("This isn't your view.", ephemeral=True)
+                    return
                 # force refresh (rep might have changed)
                 m2 = refresh_market_if_stale(uid, max_age_sec=0)
                 # re-read player to ensure reputation is current
                 p2 = load_player(uid) or pl
                 embed2 = build_market_embed(m2)
-                await interaction2.response.edit_message(embed=embed2, view=MarketView(m2))
+                await interaction2.response.edit_message(embed=embed2, view=MarketView(m2, self.invoker_id))
 
         embed = build_market_embed(m)
-        await interaction.response.send_message(embed=embed, view=MarketView(m), ephemeral=True)
+        await interaction.response.send_message(embed=embed, view=MarketView(m, uid), ephemeral=True)
 
     @app_commands.command(name="work", description="Do a market job with a selected girl")
     @app_commands.describe(job_id="Job ID, e.g. J1", girl_id="Girl UID, e.g. g001#1234")
@@ -404,11 +421,15 @@ class Core(commands.Cog):
 
         if not confirm:
             class ConfirmView(discord.ui.View):
-                def __init__(self):
+                def __init__(self, invoker_id):
                     super().__init__(timeout=20)
+                    self.invoker_id = invoker_id
 
                 @discord.ui.button(label="Confirm", style=discord.ButtonStyle.danger, emoji="💥")
                 async def confirm_btn(self, i: discord.Interaction, b: discord.ui.Button):
+                    if i.user.id != self.invoker_id:
+                        await i.response.send_message("This isn't your view.", ephemeral=True)
+                        return
                     res = dismantle_girl(pl, girl_id)
                     save_player(pl)
                     await i.response.edit_message(
@@ -419,6 +440,9 @@ class Core(commands.Cog):
 
                 @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
                 async def cancel_btn(self, i: discord.Interaction, b: discord.ui.Button):
+                    if i.user.id != self.invoker_id:
+                        await i.response.send_message("This isn't your view.", ephemeral=True)
+                        return
                     await i.response.edit_message(content="Cancelled.", view=None, embed=None)
 
             embed = discord.Embed(
@@ -432,10 +456,10 @@ class Core(commands.Cog):
             img = profile_image_path(g.name, g.base_id)
             if img and os.path.exists(img):
                 embed.set_image(url=f"attachment://{os.path.basename(img)}")
-                await interaction.response.send_message(embed=embed, view=ConfirmView(), ephemeral=True, file=discord.File(img))
+                await interaction.response.send_message(embed=embed, view=ConfirmView(interaction.user.id), ephemeral=True, file=discord.File(img))
             else:
                 embed.set_image(url=g.image_url)
-                await interaction.response.send_message(embed=embed, view=ConfirmView(), ephemeral=True)
+                await interaction.response.send_message(embed=embed, view=ConfirmView(interaction.user.id), ephemeral=True)
             return
 
         res = dismantle_girl(pl, girl_id)
