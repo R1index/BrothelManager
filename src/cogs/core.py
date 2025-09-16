@@ -322,16 +322,21 @@ class MarketWorkView(discord.ui.View):
         ]
         if not market or not market.jobs:
             return options
+        seen_ids: set[str] = set()
         for job in market.jobs[:24]:
+            job_id = getattr(job, "job_id", None) or f"J{len(seen_ids) + 1}"
+            if job_id in seen_ids:
+                continue
+            seen_ids.add(job_id)
             sub_part = f" + {job.demand_sub} L{job.demand_sub_level}" if job.demand_sub else ""
-            label = f"{job.job_id} • {job.demand_main} L{job.demand_level}{sub_part}"
+            label = f"{job_id} • {job.demand_main} L{job.demand_level}{sub_part}"
             desc = f"Pay {job.pay} • Diff {job.difficulty}"
             options.append(
                 discord.SelectOption(
                     label=label[:100],
-                    value=job.job_id,
+                    value=job_id,
                     description=desc[:100],
-                    default=job.job_id == self.selected_job_id,
+                    default=job_id == self.selected_job_id,
                 )
             )
         return options

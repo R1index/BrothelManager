@@ -43,6 +43,46 @@ def _write_json(path: str, data: dict):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+
+def _dedupe_job_ids(raw_market: dict) -> bool:
+    """Ensure market jobs have unique identifiers for Discord select menus."""
+    if not raw_market:
+        return False
+
+    jobs = raw_market.get("jobs")
+    if not isinstance(jobs, list):
+        return False
+
+    seen: set[str] = set()
+    changed = False
+
+    for idx, job in enumerate(jobs, start=1):
+        if not isinstance(job, dict):
+            continue
+
+        original_id = job.get("job_id")
+        if not original_id or original_id == "none":
+            base = f"J{idx}"
+        else:
+            base = str(original_id)
+
+        candidate = base
+        suffix = 2
+        while candidate in seen or candidate == "none":
+            candidate = f"{base}-{suffix}"
+            suffix += 1
+
+        if candidate != original_id:
+            job["job_id"] = candidate
+            changed = True
+
+        seen.add(candidate)
+
+    if changed:
+        raw_market["jobs"] = jobs
+
+    return changed
+
 # -----------------------------------------------------------------------------
 # Catalog
 # -----------------------------------------------------------------------------
@@ -239,7 +279,14 @@ def save_market(m: Market):
 
 def load_market(uid: int) -> Optional[Market]:
     raw = _read_json(_market_path(uid))
-    return Market(**raw) if raw else None
+    if not raw:
+        return None
+
+    changed = _dedupe_job_ids(raw)
+    market = Market(**raw)
+    if changed:
+        save_market(market)
+    return market
 
 def generate_market(uid: int, jobs_count: int = 5, forced_level: int | None = None) -> Market:
     """
