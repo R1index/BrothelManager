@@ -193,16 +193,21 @@ class GameService:
             if not isinstance(job, dict):
                 continue
             original_id = job.get("job_id")
-            base = f"J{idx}" if not original_id or original_id == "none" else str(original_id)
+            original_text = str(original_id) if original_id is not None else ""
+            job_id = original_text.strip()
+            base = job_id if job_id and job_id.lower() != "none" else f"J{idx}"
+            base = base.strip() or f"J{idx}"
             candidate = base
             suffix = 2
-            while candidate in seen or candidate == "none":
+            normalized = candidate.strip().casefold()
+            while not normalized or normalized == "none" or normalized in seen:
                 candidate = f"{base}-{suffix}"
                 suffix += 1
-            if candidate != original_id:
+                normalized = candidate.strip().casefold()
+            if candidate != job_id or original_text != job_id:
                 job["job_id"] = candidate
                 changed = True
-            seen.add(candidate)
+            seen.add(normalized)
         if changed:
             raw_market["jobs"] = jobs
         return changed
