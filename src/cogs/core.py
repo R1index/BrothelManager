@@ -328,32 +328,11 @@ class Core(commands.Cog):
         if not pl:
             await interaction.response.send_message("Use /start first.", ephemeral=True)
             return
-        brothel = pl.ensure_brothel()
-        slots_left = brothel.rooms - len(pl.girls)
-        if slots_left <= 0:
-            await interaction.response.send_message("All rooms are occupied. Expand your brothel first.", ephemeral=True)
-            return
-        if times > slots_left:
-            await interaction.response.send_message(
-                f"Only {slots_left} room(s) available. Reduce rolls or expand rooms.",
-                ephemeral=True,
-            )
-            return
-        cost = 100 * times
-        if pl.currency < cost:
-            await interaction.response.send_message("Not enough coins.", ephemeral=True)
-            return
-
-        pl.currency -= cost
-        save_player(pl)
-
         try:
-            girls = roll_gacha(interaction.user.id, times)
+            girls, total_cost = roll_gacha(interaction.user.id, times)
         except RuntimeError as exc:
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
-        # re-load to display current state if needed
-        pl = load_player(interaction.user.id)
 
         embeds = []
         for g in girls:
@@ -369,7 +348,7 @@ class Core(commands.Cog):
             embeds.append(em)
 
         await interaction.response.send_message(
-            content=f"Spent {EMOJI_COIN} **{cost}**. You got **{len(girls)}** roll(s).",
+            content=f"Spent {EMOJI_COIN} **{total_cost}**. You got **{len(girls)}** roll(s).",
             embeds=embeds[:10],
         )
 

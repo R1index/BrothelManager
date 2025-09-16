@@ -251,18 +251,34 @@ class GameService:
         self.save_player(player)
         return player
 
-    def roll_gacha(self, uid: int, times: int = 1) -> List[Girl]:
+    def roll_gacha(self, uid: int, times: int = 1) -> Tuple[List[Girl], int]:
         player = self.load_player(uid)
         if not player:
             raise RuntimeError("Player not found.")
+
+        times = max(1, int(times))
 
         brothel = player.ensure_brothel()
         brothel.prune_training(player.girls)
         slots_left = max(0, brothel.rooms - len(player.girls))
         if slots_left <= 0:
-            raise RuntimeError("All rooms are currently occupied.")
+            raise RuntimeError("All rooms are occupied. Expand your brothel first.")
         if times > slots_left:
-            raise RuntimeError(f"Not enough free rooms ({slots_left} available).")
+            raise RuntimeError(
+                f"Only {slots_left} room(s) available. Reduce rolls or expand rooms."
+            )
+
+        config = self._load_config()
+        gacha_cfg = config.get("gacha") if isinstance(config, dict) else None
+        raw_cost = (gacha_cfg or {}).get("roll_cost", 100)
+        try:
+            roll_cost = max(0, int(raw_cost))
+        except (TypeError, ValueError):
+            roll_cost = 100
+        total_cost = roll_cost * times
+
+        if player.currency < total_cost:
+            raise RuntimeError("Not enough coins.")
 
         catalog = self.store.load_catalog()
         entries = catalog.get("girls", [])
@@ -277,16 +293,28 @@ class GameService:
             choice = random.choices(range(len(entries)), weights=weights, k=1)[0]
             return entries[choice]
 
+        original_currency = player.currency
+        original_girls_len = len(player.girls)
         added: List[Girl] = []
-        for _ in range(times):
-            base_entry = pick_entry()
-            girl_uid = self._alloc_girl_uid(base_entry["id"], player.girls)
-            girl = self._make_girl_from_catalog_entry(base_entry, uid=girl_uid)
-            player.girls.append(girl)
-            added.append(girl)
 
-        self.save_player(player)
-        return added
+        try:
+            for _ in range(times):
+                base_entry = pick_entry()
+                girl_uid = self._alloc_girl_uid(base_entry["id"], player.girls)
+                girl = self._make_girl_from_catalog_entry(base_entry, uid=girl_uid)
+                player.girls.append(girl)
+                added.append(girl)
+
+            if total_cost:
+                player.currency -= total_cost
+
+            self.save_player(player)
+        except Exception:
+            player.currency = original_currency
+            del player.girls[original_girls_len:]
+            raise
+
+        return added, total_cost
 
     # ------------------------------------------------------------------
     # Market persistence
