@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import time
 from typing import Iterable, Optional
@@ -124,6 +125,7 @@ class MarketWorkView(discord.ui.View):
     BASE_COLOR = 0x34D399
     SUCCESS_COLOR = 0x22C55E
     FAILURE_COLOR = 0xEF4444
+    GIRL_PAGE_SIZE = 24
 
     def __init__(self, *, user_id: int, invoker_id: int, forced_level: int | None, player, market):
         super().__init__(timeout=120)
@@ -137,6 +139,9 @@ class MarketWorkView(discord.ui.View):
         self._player_cache = player
         self._market_cache = market
         self._job_value_to_id: dict[str, str | None] = {"none": None}
+        self.girl_page: int = 0
+        self._girl_page_count: int = 1
+        self._girl_total: int = 0
 
         self.girl_select = self.GirlSelect(self, player)
         self.job_select = self.JobSelect(self, market)
@@ -184,6 +189,7 @@ class MarketWorkView(discord.ui.View):
             self.selected_job_id = None
 
         self.girl_select.options = self._build_girl_options(player, brothel)
+        self._update_girl_select_placeholder()
         self.girl_select.disabled = not (player and player.girls)
 
         self.job_select.options = self._build_job_options(market)
@@ -205,6 +211,25 @@ class MarketWorkView(discord.ui.View):
         if brothel and self.selected_girl_uid:
             in_training = brothel.training_for(self.selected_girl_uid) is not None
         self.work_btn.disabled = (not can_work) or in_training
+        total_pages = self._girl_page_count if self._girl_page_count > 0 else 1
+        has_girls = bool(player and player.girls)
+        multiple_pages = has_girls and total_pages > 1
+        self.girl_prev_page_btn.disabled = (not multiple_pages) or self.girl_page <= 0
+        self.girl_next_page_btn.disabled = (
+            (not multiple_pages) or self.girl_page >= total_pages - 1
+        )
+
+    def _current_girl_placeholder(self) -> str:
+        if self._girl_total <= 0:
+            return "Preview with girl..."
+        if self._girl_page_count <= 1:
+            return "Preview with girl..."
+        return f"Preview with girl... (Page {self.girl_page + 1}/{self._girl_page_count})"
+
+    def _update_girl_select_placeholder(self) -> None:
+        placeholder = self._current_girl_placeholder()
+        if getattr(self, "girl_select", None):
+            self.girl_select.placeholder = placeholder
 
     def _build_girl_options(self, player, brothel) -> list[discord.SelectOption]:
         options = [
@@ -216,8 +241,20 @@ class MarketWorkView(discord.ui.View):
             )
         ]
         if not player or not player.girls:
+            self._girl_total = 0
+            self._girl_page_count = 1
+            self.girl_page = 0
             return options
-        for g in player.girls[:24]:
+        page_size = self.GIRL_PAGE_SIZE
+        self._girl_total = len(player.girls)
+        self._girl_page_count = max(1, math.ceil(self._girl_total / page_size))
+        if self.girl_page < 0:
+            self.girl_page = 0
+        if self.girl_page >= self._girl_page_count:
+            self.girl_page = self._girl_page_count - 1
+        start = self.girl_page * page_size
+        end = start + page_size
+        for g in player.girls[start:end]:
             label = f"{g.name} ({g.uid})"
             lust_ratio = g.lust / g.lust_max if g.lust_max else 0.0
             mood = lust_state_label(lust_ratio)
@@ -249,6 +286,30 @@ class MarketWorkView(discord.ui.View):
                 )
             )
         return options
+
+    @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary, row=2)
+    async def girl_prev_page_btn(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        if not await self._ensure_owner(interaction):
+            return
+        if self.girl_page > 0:
+            self.girl_page -= 1
+        self._apply_state()
+        embed = self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary, row=2)
+    async def girl_next_page_btn(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        if not await self._ensure_owner(interaction):
+            return
+        if self.girl_page < self._girl_page_count - 1:
+            self.girl_page += 1
+        self._apply_state()
+        embed = self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
 
     def _allocate_job_option_value(self, canonical: str, seen_values: set[str], idx: int) -> str:
         base_value = (canonical or f"J{idx}").strip() or f"J{idx}"
@@ -555,9 +616,10 @@ class MarketWorkView(discord.ui.View):
         def __init__(self, outer: "MarketWorkView", player):
             self.outer = outer
             brothel = player.ensure_brothel() if player else None
+            options = outer._build_girl_options(player, brothel)
             super().__init__(
-                placeholder="Preview with girl...",
-                options=outer._build_girl_options(player, brothel),
+                placeholder=outer._current_girl_placeholder(),
+                options=options,
                 min_values=1,
                 max_values=1,
             )
