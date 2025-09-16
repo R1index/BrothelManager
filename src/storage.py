@@ -7,7 +7,7 @@ import time
 from typing import Optional, Tuple, Dict, Any, List
 
 from .models import (
-    Player, Girl, Market, Job,
+    Player, Girl, Market, Job, BrothelState,
     MAIN_SKILLS, SUB_SKILLS,
     normalize_skill_map, normalize_prefs,
     get_level, add_skill_xp, level_xp_threshold,
@@ -87,6 +87,7 @@ def load_player(uid: int) -> Optional[Player]:
         g["prefs_subskills"] = normalize_prefs(g.get("prefs_subskills", {}), SUB_SKILLS)
 
     pl = Player(**raw)
+    pl.ensure_brothel()
     for g in pl.girls:
         g.normalize_skill_structs()
         # ensure new stat fields exist even if data was created before the update
@@ -182,6 +183,7 @@ def grant_starter_pack(uid: int) -> Player:
 
     # create player
     pl = Player(user_id=uid, currency=500, girls=[])
+    pl.ensure_brothel()
     # create first girl
     g = _make_girl_from_catalog_entry(base, counter=1)
     g.uid = _alloc_girl_uid(g.base_id, uid, 1)
@@ -245,15 +247,27 @@ def generate_market(uid: int, jobs_count: int = 5, forced_level: int | None = No
     Optional forced_level overrides the reputation-based level.
     """
     pl = load_player(uid)  # fixed: no self-import
+    brothel = pl.ensure_brothel() if pl else None
     lvl = forced_level if forced_level is not None else market_level_from_rep(pl.reputation if pl else 0)
 
+    base_jobs = jobs_count
+    if brothel:
+        dynamic_jobs = 2 + lvl + brothel.rooms
+        dynamic_jobs += max(0, brothel.popularity // 40)
+        base_jobs = max(base_jobs, dynamic_jobs)
+    jobs_total = int(max(3, min(8, base_jobs)))
+
     jobs: List[Job] = []
-    for i in range(jobs_count):
+    for i in range(jobs_total):
         demand_main = random.choice(MAIN_SKILLS)
         demand_level = random.randint(0, max(1, lvl + 1))
         demand_sub = random.choice(SUB_SKILLS)
         demand_sub_level = random.randint(0, max(1, lvl + 1))
         pay = 50 + demand_level * 20 + demand_sub_level * 15 + lvl * 10
+        if brothel:
+            pay += brothel.allure_level * 12
+            pay += brothel.popularity // 5
+            pay += max(-20, int((brothel.cleanliness - 70) * 0.8))
         jobs.append(Job(
             job_id=f"J{i+1}",
             demand_main=demand_main,
@@ -283,9 +297,11 @@ def refresh_market_if_stale(uid: int, max_age_sec: int = 300, forced_level: int 
 # Job resolution
 # -----------------------------------------------------------------------------
 
-def evaluate_job(girl: Girl, job: Job) -> dict:
+def evaluate_job(girl: Girl, job: Job, brothel: BrothelState | None = None) -> dict:
     """Compute derived metrics for a girl attempting a job."""
     girl.ensure_stat_defaults()
+    if brothel:
+        brothel.ensure_bounds()
 
     main_lvl = get_level(girl.skills, job.demand_main)
     sub_name = getattr(job, "demand_sub", None)
@@ -324,7 +340,6 @@ def evaluate_job(girl: Girl, job: Job) -> dict:
     if lust_ratio < 0.3:
         success_chance -= (0.3 - lust_ratio) * 0.35
     success_chance -= (job.difficulty - 1) * 0.08
-    success_chance = max(0.05, min(0.97, success_chance))
 
     reward_multiplier = 1.0
     reward_multiplier += diff_main * 0.06
@@ -336,7 +351,6 @@ def evaluate_job(girl: Girl, job: Job) -> dict:
     reward_multiplier += (lust_ratio - 0.6) * 0.32
     if lust_ratio > 0.85:
         reward_multiplier += (lust_ratio - 0.85) * 0.14
-    reward_multiplier = max(0.45, min(2.2, reward_multiplier))
 
     injury_base = 0.12 + (job.difficulty - 1) * 0.08
     injury_base -= diff_main * 0.025
@@ -349,7 +363,18 @@ def evaluate_job(girl: Girl, job: Job) -> dict:
         injury_base += (0.25 - lust_ratio) * 0.28
     if lust_ratio > 0.9:
         injury_base += (lust_ratio - 0.9) * 0.35
-    injury_chance = max(0.05, min(0.7, injury_base))
+
+    if brothel:
+        success_chance += brothel.success_bonus()
+        reward_multiplier *= brothel.reward_modifier()
+        injury_base *= brothel.injury_modifier()
+        lust_cost = max(1, int(lust_cost * brothel.lust_modifier()))
+
+    success_chance = max(0.05, min(0.97, success_chance))
+
+    reward_multiplier = max(0.45, min(2.5, reward_multiplier))
+
+    injury_chance = max(0.03, min(0.7, injury_base))
 
     injury_min = max(5, 8 + job.difficulty * 4 - max(0, diff_main) * 2)
     injury_max = max(injury_min + 2, 18 + job.difficulty * 6 - max(0, diff_main + diff_sub) * 2)
@@ -408,12 +433,14 @@ def resolve_job(pl: Player, job: Job, girl: Girl) -> dict:
     """
     # Regen before we check/consume stamina (also auto-frees pregnancy at 30/30)
     girl.apply_regen()
+    brothel = pl.ensure_brothel()
+    brothel.apply_decay()
 
     # 🚫 Block any job while pregnant
     if girl.pregnant:
         return {"ok": False, "reason": "Girl is pregnant", "reward": 0}
 
-    info = evaluate_job(girl, job)
+    info = evaluate_job(girl, job, brothel)
 
     STA_COST = info["stamina_cost"]
     if girl.health <= 0:
@@ -463,6 +490,15 @@ def resolve_job(pl: Player, job: Job, girl: Girl) -> dict:
     success = success_roll < info["success_chance"]
     reward_multiplier = info["reward_multiplier"] if success else 0.0
     reward = int(base_reward * reward_multiplier)
+
+    clean_before = brothel.cleanliness
+    morale_before = brothel.morale
+    pop_before = brothel.popularity
+    pool_before = brothel.upkeep_pool
+    facility_levels_before = {
+        key: brothel.facility_level(key)
+        for key in ("comfort", "hygiene", "security", "allure")
+    }
 
     # Girl EXP / level-ups (cap 9999)
     base_xp_gain = 8 + job.difficulty * 5
@@ -544,6 +580,18 @@ def resolve_job(pl: Player, job: Job, girl: Girl) -> dict:
         vitality_xp_gain += max(1, injury_amount // 4)
     girl.gain_vitality_xp(vitality_xp_gain)
 
+    brothel.register_job_outcome(success, injured, job, reward)
+    brothel_deltas = {
+        "cleanliness": brothel.cleanliness - clean_before,
+        "morale": brothel.morale - morale_before,
+        "popularity": brothel.popularity - pop_before,
+        "upkeep": brothel.upkeep_pool - pool_before,
+    }
+    brothel_levels = {
+        key: brothel.facility_level(key) - facility_levels_before[key]
+        for key in facility_levels_before
+    }
+
     return {
         "ok": success,
         "reason": "Success" if success else "Failed",
@@ -560,6 +608,8 @@ def resolve_job(pl: Player, job: Job, girl: Girl) -> dict:
         "lust_after": girl.lust,
         "lust_after_ratio": girl.lust / girl.lust_max if girl.lust_max else 0.0,
         "lust_ratio_before": info["lust_ratio"],
+        "brothel_diff": brothel_deltas,
+        "brothel_levels": brothel_levels,
     }
 
 # -----------------------------------------------------------------------------

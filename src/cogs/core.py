@@ -11,7 +11,7 @@ from ..storage import (
 )
 from ..models import (
     RARITY_COLORS, make_bar, skill_xp_threshold, get_level, get_xp, market_level_from_rep,
-    MAIN_SKILLS, SUB_SKILLS, stat_xp_threshold,
+    MAIN_SKILLS, SUB_SKILLS, stat_xp_threshold, PREF_FAV, PREF_BLOCKED,
 )
 from ..assets_util import profile_image_path
 
@@ -33,6 +33,46 @@ EMOJI_STAT_END = "🛡️"
 EMOJI_TRAIT = "✨"
 EMOJI_DIMENSION = "📏"
 EMOJI_BODY = "🧍"
+EMOJI_CLEAN = "🧼"
+EMOJI_MORALE = "😊"
+EMOJI_POPULARITY = "📣"
+EMOJI_ROOMS = "🚪"
+EMOJI_FACILITY = "🏛️"
+EMOJI_COMFORT = "🛋️"
+EMOJI_HYGIENE = "🧴"
+EMOJI_SECURITY = "🛡️"
+EMOJI_ALLURE = "🎀"
+
+EMBED_SPACER = "⠀"  # Braille blank to create column spacing in embeds
+
+SKILL_ICONS = {
+    "Human": "🧠",
+    "Insect": "🐜",
+    "Beast": "🐾",
+    "Monster": "👾",
+}
+
+SUB_SKILL_ICONS = {
+    "VAGINAL": "💞",
+    "ANAL": "🍑",
+    "ORAL": "👄",
+    "BREAST": "🤱",
+    "HAND": "🤲",
+    "FOOT": "🦶",
+    "TOY": "🧸",
+}
+
+FACILITY_INFO = {
+    "comfort": (EMOJI_COMFORT, "Comfort"),
+    "hygiene": (EMOJI_HYGIENE, "Hygiene"),
+    "security": (EMOJI_SECURITY, "Security"),
+    "allure": (EMOJI_ALLURE, "Allure"),
+}
+
+PREF_ICONS = {
+    PREF_FAV: "💖",
+    PREF_BLOCKED: "⛔",
+}
 
 
 # -----------------------------------------------------------------------------
@@ -141,6 +181,31 @@ def lust_state_icon(ratio: float) -> str:
     return "❄️"
 
 
+def brothel_overview_lines(brothel) -> tuple[str, str]:
+    summary = (
+        f"{EMOJI_ROOMS} Rooms {brothel.rooms} • "
+        f"{EMOJI_CLEAN} Clean {brothel.cleanliness}/100 • "
+        f"{EMOJI_MORALE} Morale {brothel.morale}/100 • "
+        f"{EMOJI_POPULARITY} Pop {brothel.popularity}"
+    )
+    facility_short = " | ".join(
+        f"{FACILITY_INFO[key][0]} L{brothel.facility_level(key)}"
+        for key in ("comfort", "hygiene", "security", "allure")
+    )
+    reserve = f"{EMOJI_COIN} Reserve {brothel.upkeep_pool}"
+    return summary, f"{reserve} • {facility_short}"
+
+
+def brothel_facility_lines(brothel) -> list[str]:
+    lines: list[str] = []
+    for key in ("comfort", "hygiene", "security", "allure"):
+        icon, label = FACILITY_INFO[key]
+        lvl, xp, need = brothel.facility_progress(key)
+        bar = make_bar(xp, need, length=8)
+        lines.append(f"{icon} {label} L{lvl} [{bar}] {xp}/{need}")
+    return lines
+
+
 class MarketWorkView(discord.ui.View):
     BASE_COLOR = 0x34D399
     SUCCESS_COLOR = 0x22C55E
@@ -175,6 +240,9 @@ class MarketWorkView(discord.ui.View):
 
         player = self._player_cache
         market = self._market_cache
+
+        if player:
+            player.ensure_brothel()
 
         if player and self.selected_girl_uid and not player.get_girl(self.selected_girl_uid):
             self.selected_girl_uid = None
@@ -274,6 +342,8 @@ class MarketWorkView(discord.ui.View):
         pl = load_player(self.user_id)
         if not pl:
             return None
+        brothel = pl.ensure_brothel()
+        brothel.apply_decay()
         for g in pl.girls:
             g.normalize_skill_structs()
             g.apply_regen()
@@ -300,6 +370,8 @@ class MarketWorkView(discord.ui.View):
 
     def build_embed(self) -> discord.Embed:
         market = self._market_cache
+        player = self._player_cache
+        brothel = getattr(player, "brothel", None)
         color = self.last_result_color or self.BASE_COLOR
         level = market.level if market else 0
         embed = discord.Embed(
@@ -309,6 +381,11 @@ class MarketWorkView(discord.ui.View):
         desc_parts: list[str] = []
         if self.last_result_lines:
             desc_parts.append("\n".join(self.last_result_lines))
+
+        if brothel:
+            overview, reserves = brothel_overview_lines(brothel)
+            desc_parts.append(overview)
+            desc_parts.append(reserves)
 
         girl = self._get_selected_girl()
         if girl:
@@ -336,7 +413,7 @@ class MarketWorkView(discord.ui.View):
             value_lines = [f"{EMOJI_COIN} Base pay: **{job.pay}** • Difficulty: {job.difficulty}"]
 
             if girl:
-                info = evaluate_job(girl, job)
+                info = evaluate_job(girl, job, brothel)
                 if info["blocked_main"] or (job.demand_sub and info["blocked_sub"]):
                     value_lines.append("🚫 Preferences block this job.")
                 elif not info["meets_main"] or not info["meets_sub"]:
@@ -412,6 +489,28 @@ class MarketWorkView(discord.ui.View):
             )
         if not result.get("ok") and girl.health <= 0:
             lines.append("🚑 Girl is incapacitated. Use /heal before working again.")
+
+        diff = result.get("brothel_diff") or {}
+        diff_parts: list[str] = []
+        if diff.get("cleanliness"):
+            diff_parts.append(f"{EMOJI_CLEAN} {diff['cleanliness']:+}")
+        if diff.get("morale"):
+            diff_parts.append(f"{EMOJI_MORALE} {diff['morale']:+}")
+        if diff.get("popularity"):
+            diff_parts.append(f"{EMOJI_POPULARITY} {diff['popularity']:+}")
+        if diff.get("upkeep"):
+            diff_parts.append(f"{EMOJI_COIN} {diff['upkeep']:+}")
+        if diff_parts:
+            lines.append(f"{EMOJI_FACILITY} {' • '.join(diff_parts)}")
+
+        level_diff = result.get("brothel_levels") or {}
+        level_parts = []
+        for key, delta in level_diff.items():
+            if delta > 0:
+                icon, label = FACILITY_INFO.get(key, ("✨", key.title()))
+                level_parts.append(f"{icon} {label} +{delta}")
+        if level_parts:
+            lines.append(f"{EMOJI_FACILITY} Upgrades: {', '.join(level_parts)}")
         return lines
 
     # ------------------------------------------------------------------
@@ -549,6 +648,56 @@ class Core(commands.Cog):
         except Exception as e:
             print("[market_refresher] error:", e)
 
+    def _brothel_status_notes(self, brothel) -> list[str]:
+        notes: list[str] = []
+        if brothel.cleanliness < 40:
+            notes.append("🧽 Cleanliness is low — schedule maintenance soon.")
+        elif brothel.cleanliness > 85:
+            notes.append("✨ Rooms are sparkling and impressing clients.")
+
+        if brothel.morale < 55:
+            notes.append("😊 Staff morale is dipping; give them a break or bonuses.")
+        elif brothel.morale > 90:
+            notes.append("🎉 Spirits are high — expect better service quality.")
+
+        if brothel.popularity < 25:
+            notes.append("📣 Consider promotions to attract more clientele.")
+        elif brothel.popularity > 120:
+            notes.append("🔥 Demand is surging; premium jobs may appear more often.")
+
+        comfort_lvl = brothel.facility_level("comfort")
+        security_lvl = brothel.facility_level("security")
+        if security_lvl + 1 < comfort_lvl:
+            notes.append("🛡️ Security lags behind comfort — risk of injuries rises.")
+
+        if brothel.upkeep_pool < 50:
+            notes.append("🪙 Upkeep reserve is thin; stash some coins for cleaning.")
+        elif brothel.upkeep_pool > 200:
+            notes.append("💰 Reserve is healthy; maintenance will be more efficient.")
+
+        return notes
+
+    def _build_brothel_embed(self, user_name: str, pl, notes: list[str] | None = None) -> discord.Embed:
+        brothel = pl.ensure_brothel()
+        overview, reserves = brothel_overview_lines(brothel)
+        description_parts: list[str] = []
+        if notes:
+            description_parts.extend(notes)
+            description_parts.append(EMBED_SPACER)
+        description_parts.extend([overview, reserves])
+
+        embed = discord.Embed(
+            title=f"{EMOJI_FACILITY} {user_name}'s Brothel",
+            color=0xF97316,
+            description="\n".join(description_parts),
+        )
+        embed.add_field(name="Facilities", value="\n".join(brothel_facility_lines(brothel)), inline=False)
+        status = self._brothel_status_notes(brothel)
+        if status:
+            embed.add_field(name="Status notes", value="\n".join(status), inline=False)
+        embed.set_footer(text=f"{EMOJI_COIN} Wallet {pl.currency} • ⭐ Rep {pl.reputation}")
+        return embed
+
     # -------------------------------------------------------------------------
     # Commands
     # -------------------------------------------------------------------------
@@ -591,6 +740,8 @@ class Core(commands.Cog):
             return
 
         # Normalize / regen before render
+        brothel = pl.ensure_brothel()
+        brothel.apply_decay()
         for g in pl.girls:
             g.normalize_skill_structs()
             g.apply_regen()
@@ -610,6 +761,117 @@ class Core(commands.Cog):
         embed.add_field(name=f"{EMOJI_GIRL} Girls", value=str(len(pl.girls)))
         embed.add_field(name="⭐ Reputation", value=f"{rep} / {next_cap}  {rep_bar}", inline=False)
         embed.add_field(name="🏷️ Market Level", value=str(mkt_lvl))
+
+        overview, reserves = brothel_overview_lines(brothel)
+        embed.add_field(name=f"{EMOJI_FACILITY} Brothel", value=f"{overview}\n{reserves}", inline=False)
+        facility_lines = "\n".join(brothel_facility_lines(brothel))
+        embed.add_field(name="Facilities", value=facility_lines, inline=False)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="brothel", description="Manage your establishment facilities")
+    @app_commands.choices(
+        action=[
+            app_commands.Choice(name="View status", value="view"),
+            app_commands.Choice(name="Upgrade facility", value="upgrade"),
+            app_commands.Choice(name="Maintain cleanliness", value="maintain"),
+            app_commands.Choice(name="Promote services", value="promote"),
+        ]
+    )
+    @app_commands.choices(
+        facility=[
+            app_commands.Choice(name="Comfort", value="comfort"),
+            app_commands.Choice(name="Hygiene", value="hygiene"),
+            app_commands.Choice(name="Security", value="security"),
+            app_commands.Choice(name="Allure", value="allure"),
+        ]
+    )
+    @app_commands.describe(coins="Coins to invest into the selected action")
+    async def brothel(
+        self,
+        interaction: discord.Interaction,
+        action: app_commands.Choice[str] | None = None,
+        facility: app_commands.Choice[str] | None = None,
+        coins: int | None = None,
+    ):
+        pl = load_player(interaction.user.id)
+        if not pl:
+            await interaction.response.send_message("Use /start first.", ephemeral=True)
+            return
+
+        brothel = pl.ensure_brothel()
+        brothel.apply_decay()
+
+        action_val = (action.value if action else "view").lower()
+        if action_val not in {"view", "upgrade", "maintain", "promote"}:
+            action_val = "view"
+        facility_val = facility.value if facility else None
+        invest = max(0, coins or 0)
+
+        if action_val == "view":
+            save_player(pl)
+            embed = self._build_brothel_embed(interaction.user.display_name, pl)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        if action_val == "upgrade" and not facility_val:
+            await interaction.response.send_message("Select which facility to upgrade.", ephemeral=True)
+            return
+
+        if invest <= 0:
+            await interaction.response.send_message("Specify how many coins to spend.", ephemeral=True)
+            return
+        if pl.currency < invest:
+            await interaction.response.send_message(
+                f"Not enough coins. Need {EMOJI_COIN} {invest}.",
+                ephemeral=True,
+            )
+            return
+
+        pl.currency -= invest
+        notes: list[str] = [f"{EMOJI_COIN} Spent {invest} coins."]
+
+        if action_val == "upgrade" and facility_val:
+            icon, label = FACILITY_INFO[facility_val]
+            before_lvl, before_xp, before_need = brothel.facility_progress(facility_val)
+            brothel.gain_facility_xp(facility_val, invest)
+            after_lvl, after_xp, after_need = brothel.facility_progress(facility_val)
+            delta_lvl = after_lvl - before_lvl
+            notes.append(
+                f"{icon} **{label}**: L{before_lvl} {before_xp}/{before_need} → L{after_lvl} {after_xp}/{after_need}"
+            )
+            if delta_lvl > 0:
+                notes.append(f"{icon} Level up +{delta_lvl}!")
+        elif action_val == "maintain":
+            result = brothel.maintain(invest)
+            notes.append(
+                f"{EMOJI_CLEAN} Cleanliness +{result['cleanliness']} (now {brothel.cleanliness}/100)."
+            )
+            if result.get("morale"):
+                notes.append(
+                    f"{EMOJI_MORALE} Morale +{result['morale']} (now {brothel.morale}/100)."
+                )
+            if result.get("pool_used"):
+                notes.append(
+                    f"{EMOJI_COIN} Used {result['pool_used']} from upkeep reserve."
+                )
+        elif action_val == "promote":
+            result = brothel.promote(invest)
+            notes.append(
+                f"{EMOJI_POPULARITY} Popularity +{result['popularity']} (now {brothel.popularity})."
+            )
+            if result.get("morale"):
+                notes.append(
+                    f"{EMOJI_MORALE} Morale +{result['morale']} (now {brothel.morale}/100)."
+                )
+
+        brothel.ensure_bounds()
+        save_player(pl)
+
+        embed = self._build_brothel_embed(
+            interaction.user.display_name,
+            pl,
+            notes=notes,
+        )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="gacha", description="Roll the gacha (100 coins per roll)")
@@ -690,10 +952,12 @@ class Core(commands.Cog):
             mood = lust_state_label(lust_ratio)
             mood_icon = lust_state_icon(lust_ratio)
             condition_lines = [
-                f"{EMOJI_SPARK} Lv **{g.level}** • EXP {g.exp}",
-                f"{EMOJI_HEART} HP {g.health}/{g.health_max}",
-                f"{EMOJI_ENERGY} STA {g.stamina}/{g.stamina_max}",
-                f"{mood_icon} {EMOJI_LUST} Lust {g.lust}/{g.lust_max} • {mood}",
+                f"{EMOJI_SPARK} Lv **{g.level}** — EXP {g.exp}",
+                "",
+                f"{EMOJI_HEART} HP **{g.health}/{g.health_max}**",
+                f"{EMOJI_ENERGY} STA **{g.stamina}/{g.stamina_max}**",
+                f"{mood_icon} {EMOJI_LUST} Lust **{g.lust}/{g.lust_max}** • {mood}",
+                "",
                 f"{EMOJI_STAT_VIT} Vitality L{g.vitality_level} [{vit_bar}] {g.vitality_xp}/{vit_need}",
                 f"{EMOJI_STAT_END} Endurance L{g.endurance_level} [{end_bar}] {g.endurance_xp}/{end_need}",
                 f"{EMOJI_LUST} Mastery L{g.lust_level} [{lust_bar}] {g.lust_xp}/{lust_need}",
@@ -704,8 +968,10 @@ class Core(commands.Cog):
                 inline=True,
             )
 
+            em.add_field(name=EMBED_SPACER, value=EMBED_SPACER, inline=True)
+
             # progress lines with prefs tags
-            def fmt_skill_lines(skmap, names, prefs, header: str):
+            def fmt_skill_lines(skmap, names, prefs, header: str, icons_map: dict[str, str]):
                 entries: list[str] = []
                 for nm in names:
                     lvl = get_level(skmap, nm)
@@ -713,15 +979,11 @@ class Core(commands.Cog):
                     need = skill_xp_threshold(lvl)
                     bar = make_bar(xp, need, length=8)
                     pref = str(prefs.get(nm, "true")).lower()
-                    if pref == "false":
-                        tag = "🚫"
-                    elif pref == "fav":
-                        tag = "💖"
-                    else:
-                        tag = "🔸"
+                    tag = PREF_ICONS.get(pref, "🔹")
+                    typ = icons_map.get(nm, "✨")
                     progress = f"{xp}/{need}" if need else str(xp)
                     entries.append(
-                        f"{tag} **{nm}** L{lvl} [{bar}] {progress}"
+                        f"{tag}{typ} **{nm}** L{lvl} [{bar}] {progress}"
                     )
 
                 if not entries:
@@ -730,13 +992,14 @@ class Core(commands.Cog):
                 lines: list[str] = []
                 if header:
                     lines.append(f"*{header}*")
+                    lines.append(EMBED_SPACER)
 
                 lines.extend(entries)
                 return "\n".join(lines)
 
             em.add_field(
                 name=f"{EMOJI_SKILL} Skills",
-                value=fmt_skill_lines(g.skills, MAIN_SKILLS, g.prefs_skills, "Focus"),
+                value=fmt_skill_lines(g.skills, MAIN_SKILLS, g.prefs_skills, "Focus", SKILL_ICONS),
                 inline=True,
             )
 
@@ -785,9 +1048,11 @@ class Core(commands.Cog):
                 inline=True,
             )
 
+            em.add_field(name=EMBED_SPACER, value=EMBED_SPACER, inline=True)
+
             em.add_field(
                 name=f"{EMOJI_SUBSKILL} Sub-skills",
-                value=fmt_skill_lines(g.subskills, SUB_SKILLS, g.prefs_subskills, "Techniques"),
+                value=fmt_skill_lines(g.subskills, SUB_SKILLS, g.prefs_subskills, "Techniques", SUB_SKILL_ICONS),
                 inline=True
             )
 
@@ -806,6 +1071,8 @@ class Core(commands.Cog):
             await interaction.response.send_message("Use /start first.", ephemeral=True)
             return
 
+        brothel = pl.ensure_brothel()
+        brothel.apply_decay()
         for g in pl.girls:
             g.normalize_skill_structs()
             g.apply_regen()

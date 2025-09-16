@@ -72,6 +72,11 @@ def stat_xp_threshold(level: int) -> int:
     """XP threshold for secondary stats (vitality/endurance)."""
     return 30 + int(level * 8 + (level ** 1.08))
 
+
+def facility_xp_threshold(level: int) -> int:
+    """XP threshold for brothel facility upgrades."""
+    return 80 + int(level * 25 + (level ** 1.05) * 15)
+
 # -----------------------------------------------------------------------------
 # Skill helpers (canonical structure: {'level': int, 'xp': int})
 # -----------------------------------------------------------------------------
@@ -337,6 +342,194 @@ class Job(BaseModel):
     pay: int
     difficulty: int = 1
 
+
+class BrothelState(BaseModel):
+    comfort_level: int = 1
+    comfort_xp: int = 0
+    hygiene_level: int = 1
+    hygiene_xp: int = 0
+    security_level: int = 1
+    security_xp: int = 0
+    allure_level: int = 1
+    allure_xp: int = 0
+
+    cleanliness: int = 80
+    morale: int = 70
+    popularity: int = 15
+    rooms: int = 3
+    upkeep_pool: int = 0
+
+    last_tick_ts: int = Field(default_factory=now_ts)
+
+    FACILITY_NAMES = ("comfort", "hygiene", "security", "allure")
+
+    def ensure_bounds(self):
+        for name in self.FACILITY_NAMES:
+            lvl_attr = f"{name}_level"
+            xp_attr = f"{name}_xp"
+            setattr(self, lvl_attr, max(1, int(getattr(self, lvl_attr, 1))))
+            setattr(self, xp_attr, max(0, int(getattr(self, xp_attr, 0))))
+
+        self.cleanliness = min(100, max(0, int(self.cleanliness)))
+        self.morale = min(100, max(10, int(self.morale)))
+        self.popularity = min(250, max(0, int(self.popularity)))
+        self.rooms = max(1, int(self.rooms))
+        self.upkeep_pool = min(10000, max(0, int(self.upkeep_pool)))
+        if self.last_tick_ts <= 0:
+            self.last_tick_ts = now_ts()
+
+    def facility_threshold(self, name: str) -> int:
+        return facility_xp_threshold(self.facility_level(name))
+
+    def facility_level(self, name: str) -> int:
+        return int(getattr(self, f"{name}_level", 1))
+
+    def facility_xp(self, name: str) -> int:
+        return int(getattr(self, f"{name}_xp", 0))
+
+    def facility_progress(self, name: str) -> Tuple[int, int, int]:
+        lvl = self.facility_level(name)
+        xp = self.facility_xp(name)
+        need = facility_xp_threshold(lvl)
+        return lvl, xp, need
+
+    def gain_facility_xp(self, name: str, amount: int):
+        if name not in self.FACILITY_NAMES:
+            return
+        amount = max(0, int(amount))
+        if amount <= 0:
+            return
+        lvl_attr = f"{name}_level"
+        xp_attr = f"{name}_xp"
+        lvl = self.facility_level(name)
+        xp = self.facility_xp(name) + amount
+        need = facility_xp_threshold(lvl)
+        while lvl < 9999 and xp >= need:
+            xp -= need
+            lvl += 1
+            need = facility_xp_threshold(lvl)
+        setattr(self, lvl_attr, lvl)
+        setattr(self, xp_attr, xp)
+        self.ensure_bounds()
+
+    def apply_decay(self):
+        self.ensure_bounds()
+        now = now_ts()
+        elapsed = max(0, now - self.last_tick_ts)
+        if elapsed < 900:
+            return
+        ticks = elapsed // 900
+        if ticks <= 0:
+            return
+        decay = int(ticks)
+        self.cleanliness = max(0, self.cleanliness - decay)
+
+        morale_shift = 0
+        if self.cleanliness < 40:
+            morale_shift -= max(1, decay // 2)
+        elif self.cleanliness > 85:
+            morale_shift += max(1, decay // 3)
+        self.morale = min(100, max(10, self.morale + morale_shift))
+
+        if self.cleanliness < 50:
+            self.popularity = max(0, self.popularity - max(1, decay // 2))
+        else:
+            self.popularity = min(250, self.popularity + int(decay // 3))
+
+        remainder = elapsed % 900
+        self.last_tick_ts = now - remainder
+
+    def success_bonus(self) -> float:
+        boost = 0.015 * max(0, self.comfort_level - 1)
+        boost += max(-0.05, (self.morale - 70) / 350)
+        boost += min(0.05, self.popularity / 500)
+        penalty = max(0.0, (50 - self.cleanliness) / 180)
+        total = boost - penalty
+        return max(-0.08, min(0.18, total))
+
+    def reward_modifier(self) -> float:
+        modifier = 1.0
+        modifier += 0.04 * max(0, self.allure_level - 1)
+        modifier += min(0.25, self.popularity / 400)
+        modifier += (self.cleanliness - 60) / 250
+        return max(0.6, min(1.6, modifier))
+
+    def injury_modifier(self) -> float:
+        reduction = 0.03 * max(0, self.security_level - 1)
+        reduction += max(0.0, (self.cleanliness - 55) / 220)
+        reduction += max(0.0, (self.morale - 70) / 300)
+        modifier = 1.0 - reduction
+        return max(0.55, min(1.05, modifier))
+
+    def lust_modifier(self) -> float:
+        modifier = 1.0
+        modifier -= 0.02 * max(0, self.comfort_level - 1)
+        modifier -= max(0.0, (self.morale - 65) / 320)
+        modifier += max(0.0, (40 - self.cleanliness) / 260)
+        return max(0.7, min(1.1, modifier))
+
+    def maintain(self, coins: int) -> Dict[str, int]:
+        coins = max(0, int(coins))
+        if coins <= 0:
+            return {"cleanliness": 0, "morale": 0, "pool_used": 0}
+        pool_bonus = min(self.upkeep_pool, coins // 2)
+        self.upkeep_pool -= pool_bonus
+        effective = coins + pool_bonus * 2
+        restored = min(100 - self.cleanliness, max(1, effective // 5))
+        self.cleanliness += restored
+        morale = min(100 - self.morale, max(0, restored // 2))
+        self.morale += morale
+        self.gain_facility_xp("hygiene", restored * 2)
+        self.ensure_bounds()
+        return {"cleanliness": restored, "morale": morale, "pool_used": pool_bonus}
+
+    def promote(self, coins: int) -> Dict[str, int]:
+        coins = max(0, int(coins))
+        if coins <= 0:
+            return {"popularity": 0, "morale": 0}
+        gained = min(250 - self.popularity, max(1, coins // 6))
+        morale = min(100 - self.morale, max(0, coins // 15))
+        self.popularity += gained
+        self.morale += morale
+        self.gain_facility_xp("allure", max(3, coins // 4))
+        self.ensure_bounds()
+        return {"popularity": gained, "morale": morale}
+
+    def register_job_outcome(self, success: bool, injured: bool, job: "Job", reward: int):
+        reward = max(0, int(reward))
+        wear = 1 + job.difficulty
+        if job.demand_sub == "VAGINAL":
+            wear += 1
+        self.cleanliness = max(0, self.cleanliness - wear)
+        self.upkeep_pool = min(10000, self.upkeep_pool + max(0, reward // 30))
+
+        if success:
+            morale_gain = 2 + job.difficulty
+            pop_gain = max(1, reward // 90)
+            self.morale = min(100, self.morale + morale_gain)
+            self.popularity = min(250, self.popularity + pop_gain)
+            self.gain_facility_xp("comfort", 6 + job.difficulty * 2)
+            self.gain_facility_xp("allure", max(4, reward // 35))
+        else:
+            morale_loss = 2 + job.difficulty
+            self.morale = max(10, self.morale - morale_loss)
+            self.popularity = max(0, self.popularity - (1 + job.difficulty))
+            self.gain_facility_xp("comfort", 3 + job.difficulty)
+            self.gain_facility_xp("allure", max(2, reward // 60))
+
+        hygiene_xp = 4 + max(0, 80 - self.cleanliness) // 5
+        self.gain_facility_xp("hygiene", hygiene_xp)
+
+        if injured:
+            self.cleanliness = max(0, self.cleanliness - (2 + job.difficulty))
+            self.morale = max(10, self.morale - 3)
+            self.popularity = max(0, self.popularity - 2)
+            self.gain_facility_xp("security", 6 + job.difficulty * 2)
+        else:
+            self.gain_facility_xp("security", 3 + job.difficulty)
+
+        self.ensure_bounds()
+
 def market_level_from_rep(rep: int) -> int:
     """+1 market level per 100 reputation, starting at 0."""
     if rep < 0:
@@ -354,7 +547,18 @@ class Player(BaseModel):
     user_id: int
     currency: int = 0
     girls: List[Girl] = Field(default_factory=list)
+    brothel: BrothelState = Field(default_factory=BrothelState)
     created_ts: int = Field(default_factory=now_ts)
 
     def get_girl(self, uid: str) -> Optional[Girl]:
         return next((g for g in self.girls if g.uid == uid), None)
+
+    def ensure_brothel(self) -> BrothelState:
+        if not isinstance(self.brothel, BrothelState):
+            data = self.brothel or {}
+            if isinstance(data, dict):
+                self.brothel = BrothelState(**data)
+            else:
+                self.brothel = BrothelState()
+        self.brothel.ensure_bounds()
+        return self.brothel
