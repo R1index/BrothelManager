@@ -514,6 +514,7 @@ class GameService:
             reward_multiplier *= brothel.reward_modifier()
             injury_base *= brothel.injury_modifier()
             lust_cost = max(1, int(lust_cost * brothel.lust_modifier()))
+            lust_ok = girl.lust >= lust_cost
 
         success_chance = max(0.05, min(0.97, success_chance))
         reward_multiplier = max(0.45, min(2.5, reward_multiplier))
