@@ -1,6 +1,6 @@
 from __future__ import annotations
 from pydantic import BaseModel, Field
-from typing import Any, ClassVar, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import time
 
 # -----------------------------------------------------------------------------
@@ -9,6 +9,8 @@ import time
 
 MAIN_SKILLS = ["Human", "Insect", "Beast", "Monster"]
 SUB_SKILLS  = ["VAGINAL", "ANAL", "ORAL", "BREAST", "HAND", "FOOT", "TOY"]  # NIPPLE -> BREAST
+
+BROTHEL_FACILITY_NAMES: Tuple[str, ...] = ("comfort", "hygiene", "security", "allure")
 
 RARITY_WEIGHTS = {"R": 70, "SR": 20, "SSR": 9, "UR": 1}
 RARITY_COLORS  = {"R": 0x9fa6b2, "SR": 0x60a5fa, "SSR": 0xf59e0b, "UR": 0x8b5cf6}
@@ -361,10 +363,8 @@ class BrothelState(BaseModel):
 
     last_tick_ts: int = Field(default_factory=now_ts)
 
-    FACILITY_NAMES: ClassVar[Tuple[str, ...]] = ("comfort", "hygiene", "security", "allure")
-
     def ensure_bounds(self):
-        for name in self.FACILITY_NAMES:
+        for name in BROTHEL_FACILITY_NAMES:
             lvl_attr = f"{name}_level"
             xp_attr = f"{name}_xp"
             setattr(self, lvl_attr, max(1, int(getattr(self, lvl_attr, 1))))
@@ -394,7 +394,7 @@ class BrothelState(BaseModel):
         return lvl, xp, need
 
     def gain_facility_xp(self, name: str, amount: int):
-        if name not in self.FACILITY_NAMES:
+        if name not in BROTHEL_FACILITY_NAMES:
             return
         amount = max(0, int(amount))
         if amount <= 0:
