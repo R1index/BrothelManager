@@ -1,107 +1,66 @@
 import os
+import time
+import os
+from typing import Any
+
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
 from ..storage import (
-    load_player, save_player, grant_starter_pack, roll_gacha,
-    refresh_market_if_stale, load_market, save_market,
-    resolve_job, dismantle_girl
+    load_player,
+    save_player,
+    grant_starter_pack,
+    roll_gacha,
+    refresh_market_if_stale,
+    load_market,
+    save_market,
+    resolve_job,
+    dismantle_girl,
+    evaluate_job,
+    iter_user_ids,
 )
 from ..models import (
-    RARITY_COLORS, make_bar, skill_xp_threshold, get_level, get_xp, market_level_from_rep,
-    MAIN_SKILLS, SUB_SKILLS,
+    RARITY_COLORS,
+    make_bar,
+    market_level_from_rep,
 )
 from ..assets_util import profile_image_path
-
-EMOJI_COIN = "🪙"
-EMOJI_SPARK = "✨"
-EMOJI_GIRL = "👧"
-EMOJI_MARKET = "🛒"
-EMOJI_ENERGY = "⚡"
-EMOJI_OK = "✅"
-EMOJI_X = "❌"
-
-
-# -----------------------------------------------------------------------------
-# Paginator that supports per-page local file attachments (paths)
-# -----------------------------------------------------------------------------
-class Paginator(discord.ui.View):
-    def __init__(self, pages, invoker_id, timeout: float = 120.0, files=None):
-        """
-        pages: list[discord.Embed]
-        files: list[str | None]  -> absolute paths to local files or None
-        """
-        super().__init__(timeout=timeout)
-        self.pages = pages
-        self.invoker_id = invoker_id
-        self.index = 0
-        self.page_paths = files or [None] * len(pages)
-        self._update_buttons()
-
-    def _update_buttons(self):
-        self.first_btn.disabled = self.index <= 0
-        self.prev_btn.disabled = self.index <= 0
-        self.next_btn.disabled = self.index >= len(self.pages) - 1
-        self.last_btn.disabled = self.index >= len(self.pages) - 1
-
-    def _make_file(self):
-        p = self.page_paths[self.index]
-        if p and os.path.exists(p):
-            return discord.File(p, filename=os.path.basename(p))
-        return None
-
-    async def send(self, interaction: discord.Interaction):
-        f = self._make_file()
-        if f:
-            await interaction.response.send_message(embed=self.pages[self.index], view=self, file=f)
-        else:
-            await interaction.response.send_message(embed=self.pages[self.index], view=self)
-
-    async def _edit_page(self, interaction: discord.Interaction):
-        f = self._make_file()
-        if f:
-            await interaction.response.edit_message(embed=self.pages[self.index], view=self, attachments=[f])
-        else:
-            await interaction.response.edit_message(embed=self.pages[self.index], view=self, attachments=[])
-
-    @discord.ui.button(label="⏮", style=discord.ButtonStyle.secondary)
-    async def first_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.invoker_id:
-            await interaction.response.send_message("This isn't your view.", ephemeral=True)
-            return
-        self.index = 0
-        self._update_buttons()
-        await self._edit_page(interaction)
-
-    @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary)
-    async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.invoker_id:
-            await interaction.response.send_message("This isn't your view.", ephemeral=True)
-            return
-        if self.index > 0:
-            self.index -= 1
-        self._update_buttons()
-        await self._edit_page(interaction)
-
-    @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary)
-    async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.invoker_id:
-            await interaction.response.send_message("This isn't your view.", ephemeral=True)
-            return
-        if self.index < len(self.pages) - 1:
-            self.index += 1
-        self._update_buttons()
-        await self._edit_page(interaction)
-
-    @discord.ui.button(label="⏭", style=discord.ButtonStyle.secondary)
-    async def last_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.invoker_id:
-            await interaction.response.send_message("This isn't your view.", ephemeral=True)
-            return
-        self.index = len(self.pages) - 1
-        self._update_buttons()
-        await self._edit_page(interaction)
+from ..game.constants import (
+    EMOJI_ALLURE,
+    EMOJI_BODY,
+    EMOJI_CLEAN,
+    EMOJI_COIN,
+    EMOJI_COMFORT,
+    EMOJI_DIMENSION,
+    EMOJI_ENERGY,
+    EMOJI_FACILITY,
+    EMOJI_GIRL,
+    EMOJI_HEART,
+    EMOJI_HYGIENE,
+    EMOJI_LUST,
+    EMOJI_MARKET,
+    EMOJI_MORALE,
+    EMOJI_OK,
+    EMOJI_POPULARITY,
+    EMOJI_PROFILE,
+    EMOJI_ROOMS,
+    EMOJI_SECURITY,
+    EMOJI_SPARK,
+    EMOJI_STAT_END,
+    EMOJI_STAT_VIT,
+    EMOJI_TRAIT,
+    EMOJI_X,
+    FACILITY_INFO,
+)
+from ..game.embeds import (
+    brothel_facility_lines,
+    brothel_overview_lines,
+    build_brothel_embed,
+    build_girl_embed,
+)
+from ..game.utils import choice_value
+from ..game.views import MarketWorkView, Paginator
 
 
 # -----------------------------------------------------------------------------
@@ -119,19 +78,47 @@ class Core(commands.Cog):
     async def market_refresher(self):
         """Refresh all users' markets every 5 minutes by scanning data/users directory."""
         try:
-            from ..storage import USERS_DIR
-            with os.scandir(USERS_DIR) as it:
-                for entry in it:
-                    if not entry.name.endswith(".json"):
-                        continue
-                    try:
-                        uid = int(entry.name[:-5])
-                    except ValueError:
-                        continue
-                    # force refresh to keep market in sync with reputation-based level
-                    refresh_market_if_stale(uid, max_age_sec=0)
-        except Exception as e:
-            print("[market_refresher] error:", e)
+            for uid in iter_user_ids():
+                refresh_market_if_stale(uid, max_age_sec=0)
+        except Exception as exc:
+            print("[market_refresher] error:", exc)
+
+    def _brothel_status_notes(self, brothel) -> list[str]:
+        notes: list[str] = []
+        if brothel.cleanliness < 40:
+            notes.append("🧽 Cleanliness is low — schedule maintenance soon.")
+        elif brothel.cleanliness > 85:
+            notes.append("✨ Rooms are sparkling and impressing clients.")
+
+        if brothel.morale < 55:
+            notes.append("😊 Staff morale is dipping; give them a break or bonuses.")
+        elif brothel.morale > 90:
+            notes.append("🎉 Spirits are high — expect better service quality.")
+
+        if brothel.popularity < 25:
+            notes.append("📣 Consider promotions to attract more clientele.")
+        elif brothel.popularity > 120:
+            notes.append("🔥 Demand is surging; premium jobs may appear more often.")
+
+        comfort_lvl = brothel.facility_level("comfort")
+        security_lvl = brothel.facility_level("security")
+        if security_lvl + 1 < comfort_lvl:
+            notes.append("🛡️ Security lags behind comfort — risk of injuries rises.")
+
+        if brothel.upkeep_pool < 50:
+            notes.append("🪙 Upkeep reserve is thin; stash some coins for cleaning.")
+        elif brothel.upkeep_pool > 200:
+            notes.append("💰 Reserve is healthy; maintenance will be more efficient.")
+
+        return notes
+
+    def _build_brothel_embed(self, user_name: str, pl, notes: list[str] | None = None) -> discord.Embed:
+        brothel = pl.ensure_brothel()
+        embed = build_brothel_embed(user_name, pl, notes)
+        status = self._brothel_status_notes(brothel)
+        if status:
+            embed.add_field(name="Status notes", value="\n".join(status), inline=False)
+        return embed
 
     # -------------------------------------------------------------------------
     # Commands
@@ -175,6 +162,8 @@ class Core(commands.Cog):
             return
 
         # Normalize / regen before render
+        brothel = pl.ensure_brothel()
+        brothel.apply_decay()
         for g in pl.girls:
             g.normalize_skill_structs()
             g.apply_regen()
@@ -194,6 +183,122 @@ class Core(commands.Cog):
         embed.add_field(name=f"{EMOJI_GIRL} Girls", value=str(len(pl.girls)))
         embed.add_field(name="⭐ Reputation", value=f"{rep} / {next_cap}  {rep_bar}", inline=False)
         embed.add_field(name="🏷️ Market Level", value=str(mkt_lvl))
+
+        overview, reserves = brothel_overview_lines(brothel)
+        embed.add_field(name=f"{EMOJI_FACILITY} Brothel", value=f"{overview}\n{reserves}", inline=False)
+        facility_lines = "\n".join(brothel_facility_lines(brothel))
+        embed.add_field(name="Facilities", value=facility_lines, inline=False)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="brothel", description="Manage your establishment facilities")
+    @app_commands.choices(
+        action=[
+            app_commands.Choice(name="View status", value="view"),
+            app_commands.Choice(name="Upgrade facility", value="upgrade"),
+            app_commands.Choice(name="Maintain cleanliness", value="maintain"),
+            app_commands.Choice(name="Promote services", value="promote"),
+        ]
+    )
+    @app_commands.choices(
+        facility=[
+            app_commands.Choice(name="Comfort", value="comfort"),
+            app_commands.Choice(name="Hygiene", value="hygiene"),
+            app_commands.Choice(name="Security", value="security"),
+            app_commands.Choice(name="Allure", value="allure"),
+        ]
+    )
+    @app_commands.describe(coins="Coins to invest into the selected action")
+    async def brothel(
+        self,
+        interaction: discord.Interaction,
+        action: app_commands.Choice[str] | None = None,
+        facility: app_commands.Choice[str] | None = None,
+        coins: int | None = None,
+    ):
+        pl = load_player(interaction.user.id)
+        if not pl:
+            await interaction.response.send_message("Use /start first.", ephemeral=True)
+            return
+
+        brothel = pl.ensure_brothel()
+        brothel.apply_decay()
+
+        action_val = (choice_value(action, default="view") or "view").lower()
+        if action_val not in {"view", "upgrade", "maintain", "promote"}:
+            action_val = "view"
+
+        facility_val = choice_value(facility)
+        if facility_val:
+            facility_val = facility_val.lower()
+            if facility_val not in FACILITY_INFO:
+                facility_val = None
+        invest = max(0, coins or 0)
+
+        if action_val == "view":
+            save_player(pl)
+            embed = self._build_brothel_embed(interaction.user.display_name, pl)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        if action_val == "upgrade" and not facility_val:
+            await interaction.response.send_message("Select which facility to upgrade.", ephemeral=True)
+            return
+
+        if invest <= 0:
+            await interaction.response.send_message("Specify how many coins to spend.", ephemeral=True)
+            return
+        if pl.currency < invest:
+            await interaction.response.send_message(
+                f"Not enough coins. Need {EMOJI_COIN} {invest}.",
+                ephemeral=True,
+            )
+            return
+
+        pl.currency -= invest
+        notes: list[str] = [f"{EMOJI_COIN} Spent {invest} coins."]
+
+        if action_val == "upgrade" and facility_val:
+            icon, label = FACILITY_INFO[facility_val]
+            before_lvl, before_xp, before_need = brothel.facility_progress(facility_val)
+            brothel.gain_facility_xp(facility_val, invest)
+            after_lvl, after_xp, after_need = brothel.facility_progress(facility_val)
+            delta_lvl = after_lvl - before_lvl
+            notes.append(
+                f"{icon} **{label}**: L{before_lvl} {before_xp}/{before_need} → L{after_lvl} {after_xp}/{after_need}"
+            )
+            if delta_lvl > 0:
+                notes.append(f"{icon} Level up +{delta_lvl}!")
+        elif action_val == "maintain":
+            result = brothel.maintain(invest)
+            notes.append(
+                f"{EMOJI_CLEAN} Cleanliness +{result['cleanliness']} (now {brothel.cleanliness}/100)."
+            )
+            if result.get("morale"):
+                notes.append(
+                    f"{EMOJI_MORALE} Morale +{result['morale']} (now {brothel.morale}/100)."
+                )
+            if result.get("pool_used"):
+                notes.append(
+                    f"{EMOJI_COIN} Used {result['pool_used']} from upkeep reserve."
+                )
+        elif action_val == "promote":
+            result = brothel.promote(invest)
+            notes.append(
+                f"{EMOJI_POPULARITY} Popularity +{result['popularity']} (now {brothel.popularity})."
+            )
+            if result.get("morale"):
+                notes.append(
+                    f"{EMOJI_MORALE} Morale +{result['morale']} (now {brothel.morale}/100)."
+                )
+
+        brothel.ensure_bounds()
+        save_player(pl)
+
+        embed = self._build_brothel_embed(
+            interaction.user.display_name,
+            pl,
+            notes=notes,
+        )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="gacha", description="Roll the gacha (100 coins per roll)")
@@ -241,81 +346,22 @@ class Core(commands.Cog):
             await interaction.response.send_message("You have no girls. Use /start or /gacha.", ephemeral=True)
             return
 
-        pages = []
-        files = []  # per-page local file paths (or None)
+        pages: list[discord.Embed] = []
+        files: list[str | None] = []
 
-        for g in pl.girls:
-            g.normalize_skill_structs()
-            g.apply_regen()
-
-            em = discord.Embed(
-                title=f"{EMOJI_GIRL} {g.name} [{g.rarity}] • `{g.uid}`",
-                color=0x9CA3AF
-            )
-
-            # prefer local profile art if present
-            img_path = profile_image_path(g.name, g.base_id)
-
-            if img_path and os.path.exists(img_path):
-                em.set_image(url=f"attachment://{os.path.basename(img_path)}")
-                files.append(img_path)
+        for girl in pl.girls:
+            embed, image_path = build_girl_embed(girl)
+            if image_path and os.path.exists(image_path):
+                files.append(image_path)
             else:
-                em.set_image(url=g.image_url)
                 files.append(None)
-
-            # base stats
-            em.add_field(name="Lvl / EXP", value=f"{g.level} / {g.exp}", inline=True)
-            em.add_field(name=f"{EMOJI_ENERGY} Stamina", value=f"{g.stamina}/{g.stamina_max}", inline=True)
-
-            # bio block
-            bio_lines = []
-            if g.breast_size: bio_lines.append(f"Breast: **{g.breast_size}**")
-            if g.body_shape:  bio_lines.append(f"Body: **{g.body_shape}**")
-            dims = []
-            if g.height_cm: dims.append(f"{g.height_cm} cm")
-            if g.weight_kg: dims.append(f"{g.weight_kg} kg")
-            if g.age:       dims.append(f"{g.age} y/o")
-            if dims: bio_lines.append(" / ".join(dims))
-            if g.traits: bio_lines.append("Traits: " + ", ".join(g.traits))
-            if g.pregnant:
-                pts = g.pregnancy_points()
-                preg_bar = make_bar(pts, 30, length=12)
-                bio_lines.append(f"🤰 Pregnant {pts}/30  {preg_bar}")
-            else:
-                bio_lines.append("Not pregnant")
-            em.add_field(name="Profile", value="\n".join(bio_lines) or "—", inline=False)
-
-            # progress lines with prefs tags
-            def fmt_skill_lines(skmap, names, prefs):
-                lines = []
-                for nm in names:
-                    lvl  = get_level(skmap, nm)
-                    xp   = get_xp(skmap, nm)
-                    need = skill_xp_threshold(lvl)
-                    bar  = make_bar(xp, need, length=12)
-                    pref = str(prefs.get(nm, "true")).lower()
-                    tag  = "🚫" if pref == "false" else ("💗" if pref == "fav" else "•")
-                    lines.append(f"{tag} **{nm}** L{lvl} {bar} {xp}/{need}")
-                return "\n".join(lines)
-
-            em.add_field(
-                name="Skills",
-                value=fmt_skill_lines(g.skills, MAIN_SKILLS, g.prefs_skills),
-                inline=False
-            )
-            em.add_field(
-                name="Sub",
-                value=fmt_skill_lines(g.subskills, SUB_SKILLS, g.prefs_subskills),
-                inline=False
-            )
-
-            pages.append(em)
+            pages.append(embed)
 
         save_player(pl)
         view = Paginator(pages, interaction.user.id, timeout=120, files=files)
         await view.send(interaction)
 
-    @app_commands.command(name="market", description="Show the service market (auto-refreshes every 5 minutes). Optionally specify a level")
+    @app_commands.command(name="market", description="Browse the market and send a girl to work")
     @app_commands.describe(level="Optional market level override")
     async def market(self, interaction: discord.Interaction, level: int | None = None):
         uid = interaction.user.id
@@ -323,6 +369,13 @@ class Core(commands.Cog):
         if not pl:
             await interaction.response.send_message("Use /start first.", ephemeral=True)
             return
+
+        brothel = pl.ensure_brothel()
+        brothel.apply_decay()
+        for g in pl.girls:
+            g.normalize_skill_structs()
+            g.apply_regen()
+        save_player(pl)
 
         max_lvl = market_level_from_rep(pl.reputation)
         if level is not None:
@@ -332,80 +385,64 @@ class Core(commands.Cog):
                 )
                 return
 
-        m = refresh_market_if_stale(uid, max_age_sec=300, forced_level=level)
+        market = refresh_market_if_stale(uid, max_age_sec=300, forced_level=level)
 
-        def build_market_embed(market):
-            embed = discord.Embed(
-                title=f"{EMOJI_MARKET} Service Market — Lv{market.level}",
-                color=0x34D399
-            )
-            if not market.jobs:
-                embed.description = "No jobs available right now."
-            for j in market.jobs:
-                embed.add_field(
-                    name=f"`{j.job_id}` • {j.demand_main} L{j.demand_level} + {j.demand_sub} L{j.demand_sub_level}",
-                    value=f"{EMOJI_COIN} Pay: **{j.pay}**",
-                    inline=False,
-                )
-            embed.set_footer(text="Auto-refresh: every 5 minutes • Reputation unlocks higher tiers")
-            return embed
+        view = MarketWorkView(
+            user_id=uid,
+            invoker_id=interaction.user.id,
+            forced_level=level,
+            player=pl,
+            market=market,
+        )
+        embed = view.build_embed()
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-        class MarketView(discord.ui.View):
-            def __init__(self, market, invoker_id, level):
-                super().__init__(timeout=60)
-                self.market = market
-                self.invoker_id = invoker_id
-                self.level = level
-
-            @discord.ui.button(label="Refresh", style=discord.ButtonStyle.primary, emoji="🔄")
-            async def refresh(self, interaction2: discord.Interaction, button: discord.ui.Button):
-                if interaction2.user.id != self.invoker_id:
-                    await interaction2.response.send_message("This isn't your view.", ephemeral=True)
-                    return
-                # force refresh, keeping selected level
-                m2 = refresh_market_if_stale(uid, max_age_sec=0, forced_level=self.level)
-                embed2 = build_market_embed(m2)
-                await interaction2.response.edit_message(embed=embed2, view=MarketView(m2, self.invoker_id, self.level))
-
-        embed = build_market_embed(m)
-        await interaction.response.send_message(embed=embed, view=MarketView(m, uid, level), ephemeral=True)
-
-    @app_commands.command(name="work", description="Do a market job with a selected girl")
-    @app_commands.describe(job_id="Job ID, e.g. J1", girl_id="Girl UID, e.g. g001#1234")
-    async def work(self, interaction: discord.Interaction, job_id: str, girl_id: str):
+    @app_commands.command(name="heal", description="Heal a girl using coins")
+    @app_commands.describe(girl_id="Girl UID to heal", amount="Amount of health to restore (default: full)")
+    async def heal(self, interaction: discord.Interaction, girl_id: str, amount: int | None = None):
         uid = interaction.user.id
         pl = load_player(uid)
         if not pl:
             await interaction.response.send_message("Use /start first.", ephemeral=True)
             return
-        m = load_market(uid)
-        if not m:
-            await interaction.response.send_message(
-                "Use /market to generate the market first.", ephemeral=True
-            )
-            return
-        job = next((j for j in m.jobs if j.job_id == job_id), None)
-        if not job:
-            await interaction.response.send_message("Invalid job ID.", ephemeral=True)
-            return
+
         girl = pl.get_girl(girl_id)
         if not girl:
-            await interaction.response.send_message("Invalid girl ID.", ephemeral=True)
+            await interaction.response.send_message("Girl not found.", ephemeral=True)
             return
 
-        result = resolve_job(pl, job, girl)
-        if result["ok"]:
-            # remove job, persist changes
-            m.jobs = [j for j in m.jobs if j.job_id != job_id]
-            save_market(m)
-            save_player(pl)
+        girl.normalize_skill_structs()
+        girl.apply_regen()
 
-            # build success embed
-            em = discord.Embed(description=f"{EMOJI_OK} Success! Reward: {EMOJI_COIN} **{result['reward']}**")
-            await interaction.response.send_message(embed=em)
+        missing = girl.health_max - girl.health
+        if missing <= 0:
+            await interaction.response.send_message("She is already at full health.", ephemeral=True)
+            return
+
+        if amount is None:
+            heal_amount = missing
         else:
-            save_player(pl)
-            await interaction.response.send_message(f"{EMOJI_X} {result['reason']}. Failure (no pay).", ephemeral=True)
+            heal_amount = min(missing, max(1, amount))
+
+        cost_per_hp = max(1, 2 + girl.level // 5)
+        total_cost = heal_amount * cost_per_hp
+        if pl.currency < total_cost:
+            await interaction.response.send_message(
+                f"Not enough coins. Need {EMOJI_COIN} {total_cost} to heal that much.",
+                ephemeral=True,
+            )
+            return
+
+        pl.currency -= total_cost
+        girl.health = min(girl.health_max, girl.health + heal_amount)
+        save_player(pl)
+
+        lines = [
+            f"{EMOJI_HEART} Restored **{heal_amount}** HP for **{girl.name}**.",
+            f"Cost: {EMOJI_COIN} **{total_cost}** ({cost_per_hp} per HP)",
+            f"Current HP: {girl.health}/{girl.health_max}",
+        ]
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
     @app_commands.command(name="dismantle", description="Dismantle (disenchant) a girl into coins")
     @app_commands.describe(girl_id="Girl UID to dismantle", confirm="Confirm dismantle")
