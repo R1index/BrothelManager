@@ -260,19 +260,26 @@ class MarketWorkView(discord.ui.View):
         if not market or not market.jobs:
             return options
 
-        seen_ids: set[str] = {"none"}
+        seen_normalized: set[str] = {"none"}
         sanitized = False
 
         for idx, job in enumerate(market.jobs[:24], start=1):
             raw_id = getattr(job, "job_id", None)
             job_id = str(raw_id).strip() if raw_id is not None else ""
             base_id = job_id if job_id and job_id.lower() != "none" else f"J{idx}"
+            base_id = base_id.strip() or f"J{idx}"
 
             candidate = base_id
             suffix = 2
-            while candidate.lower() == "none" or candidate in seen_ids:
+            normalized = candidate.strip().casefold()
+            while (
+                not normalized
+                or normalized == "none"
+                or normalized in seen_normalized
+            ):
                 candidate = f"{base_id}-{suffix}"
                 suffix += 1
+                normalized = candidate.strip().casefold()
 
             if candidate != job_id:
                 try:
@@ -283,7 +290,7 @@ class MarketWorkView(discord.ui.View):
                 if self.selected_job_id == job_id:
                     self.selected_job_id = candidate
 
-            seen_ids.add(candidate)
+            seen_normalized.add(normalized)
 
             sub_part = f" + {job.demand_sub} L{job.demand_sub_level}" if job.demand_sub else ""
             label = f"{candidate} • {job.demand_main} L{job.demand_level}{sub_part}"
