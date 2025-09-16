@@ -136,6 +136,7 @@ class MarketWorkView(discord.ui.View):
         self.last_result_color: int | None = None
         self._player_cache = player
         self._market_cache = market
+        self._job_value_to_id: dict[str, str | None] = {"none": None}
 
         self.girl_select = self.GirlSelect(self, player)
         self.job_select = self.JobSelect(self, market)
@@ -249,6 +250,27 @@ class MarketWorkView(discord.ui.View):
             )
         return options
 
+    def _allocate_job_option_value(self, canonical: str, seen_values: set[str], idx: int) -> str:
+        base_value = (canonical or f"J{idx}").strip() or f"J{idx}"
+        max_len = 100
+        trimmed = base_value[:max_len]
+        if trimmed not in seen_values:
+            seen_values.add(trimmed)
+            return trimmed
+
+        suffix = 2
+        while True:
+            suffix_text = f"-{suffix}"
+            allowed = max_len - len(suffix_text)
+            if allowed <= 0:
+                candidate = suffix_text[-max_len:]
+            else:
+                candidate = f"{trimmed[:allowed]}{suffix_text}"
+            if candidate not in seen_values:
+                seen_values.add(candidate)
+                return candidate
+            suffix += 1
+
     def _build_job_options(self, market) -> list[discord.SelectOption]:
         options = [
             discord.SelectOption(
@@ -257,10 +279,12 @@ class MarketWorkView(discord.ui.View):
                 default=self.selected_job_id is None,
             )
         ]
+        self._job_value_to_id = {"none": None}
         if not market or not market.jobs:
             return options
 
         seen_normalized: set[str] = {"none"}
+        seen_values: set[str] = {"none"}
         sanitized = False
 
         for idx, job in enumerate(market.jobs[:24], start=1):
@@ -292,13 +316,16 @@ class MarketWorkView(discord.ui.View):
 
             seen_normalized.add(normalized)
 
+            option_value = self._allocate_job_option_value(candidate, seen_values, idx)
+            self._job_value_to_id[option_value] = candidate
+
             sub_part = f" + {job.demand_sub} L{job.demand_sub_level}" if job.demand_sub else ""
             label = f"{candidate} • {job.demand_main} L{job.demand_level}{sub_part}"
             desc = f"Pay {job.pay} • Diff {job.difficulty}"
             options.append(
                 discord.SelectOption(
                     label=label[:100],
-                    value=candidate,
+                    value=option_value,
                     description=desc[:100],
                     default=candidate == self.selected_job_id,
                 )
@@ -560,7 +587,11 @@ class MarketWorkView(discord.ui.View):
             if not await self.outer._ensure_owner(interaction):
                 return
             value = self.values[0]
-            self.outer.selected_job_id = None if value == "none" else value
+            if value == "none":
+                self.outer.selected_job_id = None
+            else:
+                canonical = self.outer._job_value_to_id.get(value)
+                self.outer.selected_job_id = canonical or value
             player = self.outer._load_player()
             market = self.outer._load_market()
             self.outer._apply_state(player, market)
