@@ -6,10 +6,11 @@ from discord.ext import commands, tasks
 from ..storage import (
     load_player, save_player, grant_starter_pack, roll_gacha,
     refresh_market_if_stale, load_market, save_market,
-    resolve_job, dismantle_girl
+    resolve_job, dismantle_girl, preview_job
 )
 from ..models import (
-    RARITY_COLORS, make_bar, skill_xp_threshold, get_level, get_xp, market_level_from_rep
+    RARITY_COLORS, make_bar, skill_xp_threshold, get_level, get_xp, market_level_from_rep,
+    health_xp_threshold, endurance_xp_threshold, endurance_rank, stamina_regen_from_endurance
 )
 from ..assets_util import profile_image_path, action_image_path, pregnant_profile_image_path
 
@@ -18,6 +19,11 @@ EMOJI_SPARK = "✨"
 EMOJI_GIRL = "👧"
 EMOJI_MARKET = "🛒"
 EMOJI_ENERGY = "⚡"
+EMOJI_HEALTH = "❤️"
+EMOJI_INJURY = "🩸"
+EMOJI_DICE = "🎲"
+EMOJI_MUSCLE = "💪"
+EMOJI_BANDAGE = "🩹"
 EMOJI_OK = "✅"
 EMOJI_X = "❌"
 
@@ -268,7 +274,19 @@ class Core(commands.Cog):
 
             # base stats
             em.add_field(name="Lvl / EXP", value=f"{g.level} / {g.exp}", inline=True)
-            em.add_field(name=f"{EMOJI_ENERGY} Stamina", value=f"{g.stamina}/{g.stamina_max}", inline=True)
+
+            hp_need = health_xp_threshold(g.health_max)
+            hp_bar = make_bar(g.health_xp, hp_need, length=10)
+            end_need = endurance_xp_threshold(g.stamina_max)
+            end_bar = make_bar(g.endurance_xp, end_need, length=10)
+            end_rank = endurance_rank(g.stamina_max)
+            regen_rate = stamina_regen_from_endurance(g.stamina_max)
+            condition_lines = [
+                f"{EMOJI_HEALTH} {g.health}/{g.health_max}  {EMOJI_BANDAGE} {hp_bar} {g.health_xp}/{hp_need}",
+                f"{EMOJI_ENERGY} {g.stamina}/{g.stamina_max} • regen +{regen_rate}/10m",
+                f"{EMOJI_MUSCLE} Endurance Lv{end_rank}  {EMOJI_BANDAGE} {end_bar} {g.endurance_xp}/{end_need}",
+            ]
+            em.add_field(name="Condition", value="\n".join(condition_lines), inline=False)
 
             # bio block
             bio_lines = []
@@ -345,9 +363,18 @@ class Core(commands.Cog):
             if not market.jobs:
                 embed.description = "No jobs available right now."
             for j in market.jobs:
+                info = preview_job(j)
+                chance_pct = int(round(info["chance"] * 100))
+                injury_pct = int(round(info["injury_risk"] * 100))
+                reward_mult = info["reward_multiplier"]
+                sta_cost = info["stamina_cost"]
+                sub_label = f" + {j.demand_sub} L{j.demand_sub_level}" if j.demand_sub else ""
                 embed.add_field(
-                    name=f"`{j.job_id}` • {j.demand_main} L{j.demand_level} + {j.demand_sub} L{j.demand_sub_level}",
-                    value=f"{EMOJI_COIN} Pay: **{j.pay}**",
+                    name=f"`{j.job_id}` • {j.demand_main} L{j.demand_level}{sub_label}",
+                    value=(
+                        f"{EMOJI_COIN} Pay: **{j.pay}** • ⚔️ Difficulty: {j.difficulty} • {EMOJI_ENERGY} Cost: {sta_cost}\n"
+                        f"{EMOJI_DICE} Base success: {chance_pct}% • {EMOJI_INJURY} Injury risk: {injury_pct}% • 💰 Mult: x{reward_mult:.2f}"
+                    ),
                     inline=False,
                 )
             embed.set_footer(text="Auto-refresh: every 5 minutes • Reputation unlocks higher tiers")
@@ -403,8 +430,26 @@ class Core(commands.Cog):
             save_market(m)
             save_player(pl)
 
-            # build success embed + optional local action image
-            em = discord.Embed(description=f"{EMOJI_OK} Success! Reward: {EMOJI_COIN} **{result['reward']}**")
+            chance_pct = int(round(result.get("chance", 0) * 100)) if result.get("chance") is not None else None
+            injury_pct = int(round(result.get("injury_chance", 0) * 100)) if result.get("injury_chance") is not None else None
+            desc_lines = [f"{EMOJI_OK} Success! Reward: {EMOJI_COIN} **{result['reward']}**"]
+            if chance_pct is not None:
+                desc_lines.append(
+                    f"{EMOJI_DICE} Chance: {chance_pct}% • 💰 Mult: x{result.get('reward_multiplier', 1.0):.2f}"
+                )
+            desc_lines.append(
+                f"{EMOJI_ENERGY} Cost: {result.get('stamina_cost', 0)} → {girl.stamina}/{girl.stamina_max}"
+            )
+            desc_lines.append(f"{EMOJI_HEALTH} {girl.health}/{girl.health_max}")
+            if result.get("injury"):
+                injury = result["injury"]
+                desc_lines.append(
+                    f"{EMOJI_INJURY} Injury: -{injury['damage']} HP → {injury['remaining']}/{girl.health_max}"
+                )
+            elif injury_pct is not None:
+                desc_lines.append(f"{EMOJI_BANDAGE} Injury chance this run: {injury_pct}%")
+
+            em = discord.Embed(description="\n".join(desc_lines))
             img = action_image_path(girl.name, girl.base_id, job.demand_main, getattr(job, 'demand_sub', ''))
             if img and os.path.exists(img):
                 em.set_image(url=f"attachment://{os.path.basename(img)}")
@@ -413,7 +458,24 @@ class Core(commands.Cog):
                 await interaction.response.send_message(embed=em)
         else:
             save_player(pl)
-            await interaction.response.send_message(f"{EMOJI_X} {result['reason']}. Failure (no pay).", ephemeral=True)
+            chance_pct = int(round(result.get("chance", 0) * 100)) if result.get("chance") is not None else None
+            injury_pct = int(round(result.get("injury_chance", 0) * 100)) if result.get("injury_chance") is not None else None
+            lines = [f"{EMOJI_X} {result['reason']}."]
+            if chance_pct is not None:
+                lines.append(f"{EMOJI_DICE} Chance: {chance_pct}%")
+            lines.append(
+                f"{EMOJI_ENERGY} Cost: {result.get('stamina_cost', 0)} → {girl.stamina}/{girl.stamina_max}"
+            )
+            lines.append(f"{EMOJI_HEALTH} {girl.health}/{girl.health_max}")
+            if result.get("injury"):
+                injury = result["injury"]
+                lines.append(
+                    f"{EMOJI_INJURY} Injury: -{injury['damage']} HP → {injury['remaining']}/{girl.health_max}"
+                )
+            elif injury_pct is not None:
+                lines.append(f"{EMOJI_BANDAGE} Injury chance this run: {injury_pct}%")
+            lines.append("Failure (no pay).")
+            await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
     @app_commands.command(name="dismantle", description="Dismantle (disenchant) a girl into coins")
     @app_commands.describe(girl_id="Girl UID to dismantle", confirm="Confirm dismantle")

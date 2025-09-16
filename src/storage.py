@@ -270,6 +270,80 @@ def refresh_market_if_stale(uid: int, max_age_sec: int = 300, forced_level: int 
 # Job resolution
 # -----------------------------------------------------------------------------
 
+def _clamp(val: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, val))
+
+
+def _stamina_cost(job: Job) -> int:
+    return 10 + job.difficulty * 3
+
+
+def _success_chance(
+    job: Job,
+    main_level: int,
+    sub_level: int,
+    girl_level: int,
+    stamina_ratio: float,
+    health_ratio: float,
+) -> float:
+    main_gap = main_level - job.demand_level
+    sub_gap = 0
+    if job.demand_sub:
+        sub_gap = sub_level - job.demand_sub_level
+    base = 0.45
+    base += main_gap * 0.08
+    base += sub_gap * 0.05
+    base += (girl_level - job.difficulty) * 0.03
+    base += (stamina_ratio - 0.5) * 0.25
+    base += (health_ratio - 0.5) * 0.25
+    return _clamp(base, 0.05, 0.95)
+
+
+def _reward_multiplier(chance: float) -> float:
+    return _clamp(0.5 + chance, 0.75, 1.3)
+
+
+def _injury_chance(job: Job, success: bool, chance: float, health_ratio: float) -> float:
+    base = 0.04 + job.difficulty * 0.03
+    if not success:
+        base += 0.18
+    base += max(0.0, 0.6 - chance) * 0.35
+    base += max(0.0, 0.6 - health_ratio) * 0.4
+    floor = 0.02 if success else 0.05
+    return _clamp(base, floor, 0.75)
+
+
+def _injury_damage(job: Job, success: bool) -> int:
+    base = random.randint(6, 12) + job.difficulty * 4
+    if not success:
+        base += random.randint(5, 10)
+    return max(1, base)
+
+
+def preview_job(job: Job) -> Dict[str, float]:
+    """Estimate success, reward multiplier and injury risk for a fresh girl."""
+    base_main = job.demand_level
+    base_sub = job.demand_sub_level if job.demand_sub else 0
+    chance = _success_chance(
+        job,
+        base_main,
+        base_sub,
+        girl_level=max(1, job.difficulty + 1),
+        stamina_ratio=1.0,
+        health_ratio=1.0,
+    )
+    reward_mult = _reward_multiplier(chance)
+    success_injury = _injury_chance(job, True, chance, 1.0)
+    fail_injury = _injury_chance(job, False, chance, 1.0)
+    overall_injury = chance * success_injury + (1 - chance) * fail_injury
+    return {
+        "chance": chance,
+        "reward_multiplier": reward_mult,
+        "injury_risk": overall_injury,
+        "stamina_cost": _stamina_cost(job),
+    }
+
+
 def resolve_job(pl: Player, job: Job, girl: Girl) -> dict:
     """
     Business rules:
@@ -283,24 +357,83 @@ def resolve_job(pl: Player, job: Job, girl: Girl) -> dict:
     # Regen before we check/consume stamina (also auto-frees pregnancy at 30/30)
     girl.apply_regen()
 
+    sta_cost = _stamina_cost(job)
+
     # 🚫 Block any job while pregnant
     if girl.pregnant:
-        return {"ok": False, "reason": "Girl is pregnant", "reward": 0}
+        return {
+            "ok": False,
+            "reason": "Girl is pregnant",
+            "reward": 0,
+            "chance": None,
+            "reward_multiplier": 1.0,
+            "stamina_cost": sta_cost,
+            "injury": None,
+            "injury_chance": None,
+        }
 
-    STA_COST = 10
-    if girl.stamina < STA_COST:
-        return {"ok": False, "reason": "Not enough stamina", "reward": 0}
+    MIN_HEALTH = 15
+    if girl.health <= MIN_HEALTH:
+        return {
+            "ok": False,
+            "reason": "Not enough health",
+            "reward": 0,
+            "chance": None,
+            "reward_multiplier": 1.0,
+            "stamina_cost": sta_cost,
+            "injury": None,
+            "injury_chance": None,
+        }
+
+    if girl.stamina < sta_cost:
+        return {
+            "ok": False,
+            "reason": "Not enough stamina",
+            "reward": 0,
+            "chance": None,
+            "reward_multiplier": 1.0,
+            "stamina_cost": sta_cost,
+            "injury": None,
+            "injury_chance": None,
+        }
 
     # Preference-based refusal
     if girl.prefs_skills.get(job.demand_main, "true") == PREF_BLOCKED:
-        return {"ok": False, "reason": f"Refused: main skill {job.demand_main} is blocked", "reward": 0}
+        return {
+            "ok": False,
+            "reason": f"Refused: main skill {job.demand_main} is blocked",
+            "reward": 0,
+            "chance": None,
+            "reward_multiplier": 1.0,
+            "stamina_cost": sta_cost,
+            "injury": None,
+            "injury_chance": None,
+        }
     if job.demand_sub and girl.prefs_subskills.get(job.demand_sub, "true") == PREF_BLOCKED:
-        return {"ok": False, "reason": f"Refused: sub-skill {job.demand_sub} is blocked", "reward": 0}
+        return {
+            "ok": False,
+            "reason": f"Refused: sub-skill {job.demand_sub} is blocked",
+            "reward": 0,
+            "chance": None,
+            "reward_multiplier": 1.0,
+            "stamina_cost": sta_cost,
+            "injury": None,
+            "injury_chance": None,
+        }
 
     # Level checks (>= demand)
     main_lvl = get_level(girl.skills, job.demand_main)
     if main_lvl < job.demand_level:
-        return {"ok": False, "reason": "Skill mismatch (main too low)", "reward": 0}
+        return {
+            "ok": False,
+            "reason": "Skill mismatch (main too low)",
+            "reward": 0,
+            "chance": None,
+            "reward_multiplier": 1.0,
+            "stamina_cost": sta_cost,
+            "injury": None,
+            "injury_chance": None,
+        }
 
     sub_name = getattr(job, "demand_sub", None)
     sub_need = getattr(job, "demand_sub_level", 0)
@@ -308,50 +441,105 @@ def resolve_job(pl: Player, job: Job, girl: Girl) -> dict:
     if sub_name:
         sub_lvl = get_level(girl.subskills, sub_name)
         if sub_lvl < sub_need:
-            return {"ok": False, "reason": "Skill mismatch (sub-skill too low)", "reward": 0}
+            return {
+                "ok": False,
+                "reason": "Skill mismatch (sub-skill too low)",
+                "reward": 0,
+                "chance": None,
+                "reward_multiplier": 1.0,
+                "stamina_cost": sta_cost,
+                "injury": None,
+                "injury_chance": None,
+            }
 
-    # Payout with bonuses
-    level_bonus = (girl.level - 1) * 5
-    over_main = max(0, main_lvl - job.demand_level) * 10
-    over_sub  = max(0, sub_lvl  - sub_need)         * 10 if sub_name else 0
-    reward = int(job.pay + level_bonus + over_main + over_sub)
+    stamina_ratio = girl.stamina / girl.stamina_max if girl.stamina_max else 0.0
+    stamina_ratio = _clamp(stamina_ratio, 0.0, 1.2)
+    health_ratio = girl.health / girl.health_max if girl.health_max else 0.0
+    health_ratio = _clamp(health_ratio, 0.0, 1.0)
+    chance = _success_chance(job, main_lvl, sub_lvl, girl.level, stamina_ratio, health_ratio)
+    reward_mult = _reward_multiplier(chance)
 
-    # Consume stamina
-    girl.stamina = max(0, girl.stamina - STA_COST)
+    success = random.random() < chance
 
-    # Girl EXP / level-ups (cap 9999)
-    girl.exp += 10 + job.difficulty * 5
-    while girl.level < 9999 and girl.exp >= level_xp_threshold(girl.level):
-        girl.exp -= level_xp_threshold(girl.level)
-        girl.level += 1
-        if girl.level >= 9999:
-            girl.exp = 0
-            break
+    # Consume stamina regardless of result
+    girl.stamina = max(0, girl.stamina - sta_cost)
+
+    # Base stat growth (attempt teaches endurance/health)
+    base_end_xp = 4 + job.difficulty * 3
+    base_hp_xp = 2 + job.difficulty * 2
+    girl.gain_endurance_xp(base_end_xp + (3 if success else 1))
+    girl.gain_health_xp(base_hp_xp)
+
+    reward = 0
+    reason = "Failed"
 
     # Deterministic skill XP with preference multipliers
     def _mul(pref_map: Dict[str, str], key: str) -> float:
         return 1.5 if pref_map.get(key, "true") == PREF_FAV else 1.0
 
-    main_mul = _mul(girl.prefs_skills, job.demand_main)
-    main_xp  = int((8 + job.difficulty * 2 + max(0, main_lvl - job.demand_level) * 3) * main_mul)
-    add_skill_xp(girl.skills, job.demand_main, main_xp)
+    if success:
+        level_bonus = (girl.level - 1) * 5
+        over_main = max(0, main_lvl - job.demand_level) * 10
+        over_sub = max(0, sub_lvl - sub_need) * 10 if sub_name else 0
+        reward = int((job.pay + level_bonus + over_main + over_sub) * reward_mult)
 
-    if sub_name:
-        sub_mul = _mul(girl.prefs_subskills, sub_name)
-        sub_xp  = int((5 + job.difficulty * 2 + max(0, sub_lvl - sub_need) * 3) * sub_mul)
-        add_skill_xp(girl.subskills, sub_name, sub_xp)
+        girl.exp += 10 + job.difficulty * 5
+        while girl.level < 9999 and girl.exp >= level_xp_threshold(girl.level):
+            girl.exp -= level_xp_threshold(girl.level)
+            girl.level += 1
+            if girl.level >= 9999:
+                girl.exp = 0
+                break
 
-    # Currency + reputation
-    pl.currency += reward
-    pl.reputation += 5 + job.difficulty * 2
+        main_mul = _mul(girl.prefs_skills, job.demand_main)
+        main_xp = int((8 + job.difficulty * 2 + max(0, main_lvl - job.demand_level) * 3) * main_mul)
+        add_skill_xp(girl.skills, job.demand_main, main_xp)
 
-    # Pregnancy: 3% on VAGINAL success if not pregnant
-    if sub_name == "VAGINAL" and not girl.pregnant:
-        if random.random() < 0.03:
-            girl.pregnant = True
-            girl.pregnant_since_ts = int(time.time())
+        if sub_name:
+            sub_mul = _mul(girl.prefs_subskills, sub_name)
+            sub_xp = int((5 + job.difficulty * 2 + max(0, sub_lvl - sub_need) * 3) * sub_mul)
+            add_skill_xp(girl.subskills, sub_name, sub_xp)
 
-    return {"ok": True, "reason": "Success", "reward": reward}
+        pl.currency += reward
+        pl.reputation += 5 + job.difficulty * 2
+
+        # Pregnancy: 3% on VAGINAL success if not pregnant
+        if sub_name == "VAGINAL" and not girl.pregnant:
+            if random.random() < 0.03:
+                girl.pregnant = True
+                girl.pregnant_since_ts = int(time.time())
+
+        reason = "Success"
+    else:
+        # partial experience for the attempt
+        fail_xp = max(2, 4 + job.difficulty)
+        add_skill_xp(girl.skills, job.demand_main, fail_xp)
+        if sub_name:
+            add_skill_xp(girl.subskills, sub_name, max(1, fail_xp // 2))
+
+    # Injury roll
+    injury_chance = _injury_chance(job, success, chance, health_ratio)
+    injury_info = None
+    if random.random() < injury_chance:
+        dmg = _injury_damage(job, success)
+        girl.health = max(0, girl.health - dmg)
+        girl.health_last_ts = int(time.time())
+        girl.gain_health_xp(dmg // 2 + job.difficulty * 3)
+        injury_info = {
+            "damage": dmg,
+            "remaining": girl.health,
+        }
+
+    return {
+        "ok": success,
+        "reason": reason,
+        "reward": reward,
+        "chance": chance,
+        "reward_multiplier": reward_mult,
+        "stamina_cost": sta_cost,
+        "injury": injury_info,
+        "injury_chance": injury_chance,
+    }
 
 # -----------------------------------------------------------------------------
 # Dismantle
