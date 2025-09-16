@@ -67,6 +67,20 @@ from ..game.utils import choice_value
 from ..game.views import MarketWorkView, Paginator
 
 
+BROTHEL_ALLOWED_ACTIONS = {"view", "upgrade", "maintain", "promote", "expand"}
+
+
+def normalize_brothel_action(
+    action: app_commands.Choice[str] | None,
+) -> str:
+    """Normalize the incoming action choice for /brothel commands."""
+
+    action_val = (choice_value(action, default="view") or "view").lower()
+    if action_val not in BROTHEL_ALLOWED_ACTIONS:
+        return "view"
+    return action_val
+
+
 # -----------------------------------------------------------------------------
 # Core Cog
 # -----------------------------------------------------------------------------
@@ -230,9 +244,7 @@ class Core(commands.Cog):
         brothel.apply_decay()
         pl.renown = brothel.renown
 
-        action_val = (choice_value(action, default="view") or "view").lower()
-        if action_val not in {"view", "upgrade", "maintain", "promote"}:
-            action_val = "view"
+        action_val = normalize_brothel_action(action)
 
         facility_val = choice_value(facility)
         if facility_val:
