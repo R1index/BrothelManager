@@ -38,10 +38,24 @@ def main():
     async def setup_hook():
         await bot.load_extension("src.cogs.core")
         await bot.load_extension("src.cogs.admin")
-        # Sync commands for all guilds
-        for guild in bot.guilds:
-            await bot.tree.sync(guild=guild)
-            print(f"[SYNC] Guild {guild.id}: {len(bot.tree.get_commands(guild=guild))} commands")
+
+        guild_id = config.get("discord", {}).get("guild_id")
+        synced = []
+
+        if guild_id:
+            try:
+                guild_obj = discord.Object(id=int(guild_id))
+            except (TypeError, ValueError):
+                print(f"[SYNC] Invalid guild id in config: {guild_id!r}. Falling back to global sync.")
+                synced = await bot.tree.sync()
+                print(f"[SYNC] Registered {len(synced)} global commands.")
+            else:
+                bot.tree.copy_global_to(guild=guild_obj)
+                synced = await bot.tree.sync(guild=guild_obj)
+                print(f"[SYNC] Guild {guild_id}: {len(synced)} commands")
+        else:
+            synced = await bot.tree.sync()
+            print(f"[SYNC] Registered {len(synced)} global commands.")
 
     bot.setup_hook = setup_hook
 
