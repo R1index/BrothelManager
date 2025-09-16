@@ -29,15 +29,29 @@ PREGNANCY_TOTAL_POINTS = 30       # 30 points total
 def now_ts() -> int:
     return int(time.time())
 
-def regen_stamina(current: int, last_ts: int, max_sta: int, per_tick: int = 1, tick_seconds: int = 600) -> tuple[int, int]:
-    """Regenerate stamina: +1 per 10 minutes (600s). Returns (new_stamina, new_last_ts)."""
+def regen_stamina(
+    current: int,
+    last_ts: int,
+    max_sta: int,
+    per_tick: float = 1.0,
+    tick_seconds: int = 600,
+) -> tuple[int, int]:
+    """Regenerate stamina in discrete ticks.
+
+    ``per_tick`` can be fractional to account for endurance-based bonuses. The
+    regenerated amount is floored to an integer (fractions are carried by the
+    timestamp difference on subsequent calls).
+    """
     if current >= max_sta:
         return max_sta, now_ts()
     elapsed = max(0, now_ts() - last_ts)
     ticks = elapsed // tick_seconds
     if ticks <= 0:
         return current, last_ts
-    new_val = min(max_sta, current + int(ticks * per_tick))
+    regen_amount = int(ticks * per_tick)
+    if regen_amount <= 0:
+        return current, last_ts
+    new_val = min(max_sta, current + regen_amount)
     new_last = last_ts + int(ticks * tick_seconds)
     return new_val, new_last
 
@@ -52,6 +66,11 @@ def level_xp_threshold(level: int) -> int:
 def skill_xp_threshold(level: int) -> int:
     """Skill level-up XP requirement (slightly superlinear)."""
     return 40 + int(level * 12 + (level ** 1.10))
+
+
+def stat_xp_threshold(level: int) -> int:
+    """XP threshold for secondary stats (vitality/endurance)."""
+    return 30 + int(level * 8 + (level ** 1.08))
 
 # -----------------------------------------------------------------------------
 # Skill helpers (canonical structure: {'level': int, 'xp': int})
@@ -145,9 +164,15 @@ class Girl(BaseModel):
 
     image_url: str = ""
 
-    # Stamina
+    # Vital stats
+    health: int = 100
+    health_max: int = 100
     stamina: int = 100
     stamina_max: int = 100
+    vitality_level: int = 1
+    vitality_xp: int = 0
+    endurance_level: int = 1
+    endurance_xp: int = 0
     stamina_last_ts: int = Field(default_factory=now_ts)
 
     # Skills (canonical structure)
@@ -171,8 +196,14 @@ class Girl(BaseModel):
     prefs_subskills: Dict[str, str] = Field(default_factory=lambda: {k: PREF_OPEN for k in SUB_SKILLS})
 
     def apply_regen(self):
-        # stamina regen
-        self.stamina, self.stamina_last_ts = regen_stamina(self.stamina, self.stamina_last_ts, self.stamina_max)
+        self.ensure_stat_defaults()
+        # stamina regen (endurance affects both cap and per-tick rate)
+        self.stamina, self.stamina_last_ts = regen_stamina(
+            self.stamina,
+            self.stamina_last_ts,
+            self.stamina_max,
+            per_tick=self.stamina_regen_per_tick(),
+        )
         # pregnancy auto-progress + auto-clear at full term
         if self.pregnant and self.pregnant_since_ts:
             elapsed = max(0, now_ts() - self.pregnant_since_ts)
@@ -194,6 +225,65 @@ class Girl(BaseModel):
         self.subskills = normalize_skill_map(self.subskills)
         self.prefs_skills    = normalize_prefs(self.prefs_skills, MAIN_SKILLS)
         self.prefs_subskills = normalize_prefs(self.prefs_subskills, SUB_SKILLS)
+        self.ensure_stat_defaults()
+
+    # ------------------------------------------------------------------
+    # Derived stat helpers
+    # ------------------------------------------------------------------
+
+    def ensure_stat_defaults(self):
+        """Backfill defaults for health/endurance progression."""
+        if self.vitality_level <= 0:
+            self.vitality_level = 1
+        if self.endurance_level <= 0:
+            self.endurance_level = 1
+        self.vitality_xp = max(0, int(self.vitality_xp))
+        self.endurance_xp = max(0, int(self.endurance_xp))
+        if self.health_max <= 0:
+            self.health_max = 100
+        if self.stamina_max <= 0:
+            self.stamina_max = 100
+        if self.health < 0:
+            self.health = 0
+        if self.stamina < 0:
+            self.stamina = 0
+        self.recalc_limits()
+        # Clamp current pools to their caps
+        self.health = min(max(0, self.health), self.health_max)
+        self.stamina = min(max(0, self.stamina), self.stamina_max)
+
+    def recalc_limits(self):
+        """Recalculate max health/stamina from progression stats."""
+        base_hp = 100 + (self.level - 1) * 6 + (self.vitality_level - 1) * 18
+        base_sta = 100 + (self.level - 1) * 4 + (self.endurance_level - 1) * 15
+        self.health_max = max(60, int(base_hp))
+        self.stamina_max = max(60, int(base_sta))
+
+    def stamina_regen_per_tick(self) -> float:
+        """Stamina regen modifier depending on endurance."""
+        return 1.0 + max(0, self.endurance_level - 1) * 0.25
+
+    def gain_vitality_xp(self, amount: int):
+        amount = max(0, int(amount))
+        if amount <= 0:
+            return
+        self.vitality_xp += amount
+        while self.vitality_level < 9999 and self.vitality_xp >= stat_xp_threshold(self.vitality_level):
+            self.vitality_xp -= stat_xp_threshold(self.vitality_level)
+            self.vitality_level += 1
+        self.recalc_limits()
+        self.health = min(self.health, self.health_max)
+
+    def gain_endurance_xp(self, amount: int):
+        amount = max(0, int(amount))
+        if amount <= 0:
+            return
+        self.endurance_xp += amount
+        while self.endurance_level < 9999 and self.endurance_xp >= stat_xp_threshold(self.endurance_level):
+            self.endurance_xp -= stat_xp_threshold(self.endurance_level)
+            self.endurance_level += 1
+        self.recalc_limits()
+        self.stamina = min(self.stamina, self.stamina_max)
 
 class Job(BaseModel):
     # Future: multiple sub-skill demands
