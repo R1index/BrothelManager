@@ -151,10 +151,13 @@ class Core(commands.Cog):
 
         pl = grant_starter_pack(uid)
         girl = pl.girls[0]
+        starter_coins = pl.currency
 
         embed = discord.Embed(
             title=f"{EMOJI_SPARK} Starter Pack",
-            description=f"You received {EMOJI_COIN} **500** and your first girl!",
+            description=(
+                f"You received {EMOJI_COIN} **{starter_coins}** and your first girl!"
+            ),
             color=0x60A5FA,
         )
         embed.add_field(

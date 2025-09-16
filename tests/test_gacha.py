@@ -72,6 +72,27 @@ class GachaRollTestCase(unittest.TestCase):
         after_failure = self.service.load_player(uid)
         self.assertEqual(after_failure.currency, after_success.currency)
 
+    def test_starter_coins_follow_config_value(self):
+        uid = 456
+        new_starter_coins = 987
+        config_data = {
+            "gacha": {
+                "roll_cost": self.roll_cost,
+                "starter_coins": new_starter_coins,
+                "starter_girl_id": "g001",
+            }
+        }
+        (self.base / "config.json").write_text(json.dumps(config_data))
+        # Reset cached config so the updated value is picked up.
+        self.service._config_cache = None
+
+        player = self.service.grant_starter_pack(uid)
+        self.assertEqual(player.currency, new_starter_coins)
+
+        stored = self.service.load_player(uid)
+        self.assertIsNotNone(stored)
+        self.assertEqual(stored.currency, new_starter_coins)
+
 
 if __name__ == "__main__":
     unittest.main()
