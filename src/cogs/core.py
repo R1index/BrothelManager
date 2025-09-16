@@ -24,6 +24,17 @@ EMOJI_HEART = "❤️"
 EMOJI_LUST = "🔥"
 EMOJI_OK = "✅"
 EMOJI_X = "❌"
+EMOJI_CONDITION = "🩺"
+EMOJI_SKILL = "🎯"
+EMOJI_SUBSKILL = "🧩"
+EMOJI_PROFILE = "📜"
+EMOJI_STAT_VIT = "💪"
+EMOJI_STAT_END = "🛡️"
+EMOJI_TRAIT = "✨"
+EMOJI_DIMENSION = "📏"
+EMOJI_BODY = "🧍"
+
+BLANK_FIELD = "\u200b"
 
 
 # -----------------------------------------------------------------------------
@@ -120,6 +131,18 @@ def lust_state_label(ratio: float) -> str:
     return "Dormant"
 
 
+def lust_state_icon(ratio: float) -> str:
+    if ratio >= 0.9:
+        return "💥"
+    if ratio >= 0.7:
+        return "🔥"
+    if ratio >= 0.45:
+        return "❤️"
+    if ratio >= 0.25:
+        return "✨"
+    return "❄️"
+
+
 class MarketWorkView(discord.ui.View):
     BASE_COLOR = 0x34D399
     SUCCESS_COLOR = 0x22C55E
@@ -186,15 +209,18 @@ class MarketWorkView(discord.ui.View):
                 label="— No preview —",
                 value="none",
                 default=self.selected_girl_uid is None,
+                emoji="👁️",
             )
         ]
         if not player or not player.girls:
             return options
         for g in player.girls[:24]:
             label = f"{g.name} ({g.uid})"
-            mood = lust_state_label(g.lust / g.lust_max if g.lust_max else 0.0)
+            lust_ratio = g.lust / g.lust_max if g.lust_max else 0.0
+            mood = lust_state_label(lust_ratio)
+            mood_icon = lust_state_icon(lust_ratio)
             desc = (
-                f"{EMOJI_HEART} {g.health}/{g.health_max} • "
+                f"{mood_icon} {EMOJI_HEART} {g.health}/{g.health_max} • "
                 f"{EMOJI_ENERGY} {g.stamina}/{g.stamina_max} • "
                 f"{EMOJI_LUST} {g.lust}/{g.lust_max} [{mood}]"
             )
@@ -204,6 +230,7 @@ class MarketWorkView(discord.ui.View):
                     value=g.uid,
                     description=desc[:100],
                     default=g.uid == self.selected_girl_uid,
+                    emoji=EMOJI_GIRL,
                 )
             )
         return options
@@ -663,17 +690,22 @@ class Core(commands.Cog):
             lust_bar = make_bar(g.lust_xp, lust_need, length=10)
             lust_ratio = g.lust / g.lust_max if g.lust_max else 0.0
             mood = lust_state_label(lust_ratio)
+            mood_icon = lust_state_icon(lust_ratio)
             condition_lines = [
-                f"Lvl **{g.level}** • EXP {g.exp}",
-                f"{EMOJI_HEART} {g.health}/{g.health_max}",
-                f"{EMOJI_ENERGY} {g.stamina}/{g.stamina_max}",
-                f"{EMOJI_LUST} {g.lust}/{g.lust_max} ({mood})",
+                f"{EMOJI_SPARK} Lv **{g.level}** • 📈 EXP {g.exp}",
+                f"{EMOJI_HEART} HP {g.health}/{g.health_max}",
+                f"{EMOJI_ENERGY} STA {g.stamina}/{g.stamina_max}",
+                f"{mood_icon} {EMOJI_LUST} Lust {g.lust}/{g.lust_max} [{mood}]",
                 "",
-                f"Vit L{g.vitality_level} {vit_bar} {g.vitality_xp}/{vit_need}",
-                f"End L{g.endurance_level} {end_bar} {g.endurance_xp}/{end_need}",
-                f"Lust L{g.lust_level} {lust_bar} {g.lust_xp}/{lust_need}",
+                f"{EMOJI_STAT_VIT} Vit L{g.vitality_level} {vit_bar} {g.vitality_xp}/{vit_need}",
+                f"{EMOJI_STAT_END} End L{g.endurance_level} {end_bar} {g.endurance_xp}/{end_need}",
+                f"{EMOJI_LUST} Mastery L{g.lust_level} {lust_bar} {g.lust_xp}/{lust_need}",
             ]
-            em.add_field(name="Condition", value="\n".join(condition_lines), inline=True)
+            em.add_field(
+                name=f"{EMOJI_CONDITION} Condition",
+                value="\n".join(condition_lines),
+                inline=True,
+            )
 
             # progress lines with prefs tags
             def fmt_skill_lines(skmap, names, prefs):
@@ -684,39 +716,57 @@ class Core(commands.Cog):
                     need = skill_xp_threshold(lvl)
                     bar  = make_bar(xp, need, length=12)
                     pref = str(prefs.get(nm, "true")).lower()
-                    tag  = "🚫" if pref == "false" else ("💗" if pref == "fav" else "•")
-                    lines.append(f"{tag} **{nm}** L{lvl} {bar} {xp}/{need}")
+                    if pref == "false":
+                        tag = "🚫"
+                    elif pref == "fav":
+                        tag = "💖"
+                    else:
+                        tag = "🔸"
+                    progress = f"{bar} 📈 {xp}/{need}"
+                    lines.append(f"{tag} **{nm}** L{lvl} {progress}")
+                if not lines:
+                    return f"{EMOJI_X} No training yet."
                 return "\n".join(lines)
 
             em.add_field(
-                name="Skills",
+                name=f"{EMOJI_SKILL} Skills",
                 value=fmt_skill_lines(g.skills, MAIN_SKILLS, g.prefs_skills),
-                inline=True
+                inline=True,
             )
+            em.add_field(name=BLANK_FIELD, value=BLANK_FIELD, inline=True)
 
             # bio block
             bio_lines = []
-            if g.breast_size: bio_lines.append(f"Breast: **{g.breast_size}**")
-            if g.body_shape:  bio_lines.append(f"Body: **{g.body_shape}**")
+            if g.breast_size:
+                bio_lines.append(f"🎀 Bust: **{g.breast_size}**")
+            if g.body_shape:
+                bio_lines.append(f"{EMOJI_BODY} Body: **{g.body_shape}**")
             dims = []
             if g.height_cm: dims.append(f"{g.height_cm} cm")
             if g.weight_kg: dims.append(f"{g.weight_kg} kg")
             if g.age:       dims.append(f"{g.age} y/o")
-            if dims: bio_lines.append(" / ".join(dims))
-            if g.traits: bio_lines.append("Traits: " + ", ".join(g.traits))
+            if dims:
+                bio_lines.append(f"{EMOJI_DIMENSION} {' / '.join(dims)}")
+            if g.traits:
+                bio_lines.append(f"{EMOJI_TRAIT} Traits: {', '.join(g.traits)}")
             if g.pregnant:
                 pts = g.pregnancy_points()
                 preg_bar = make_bar(pts, 30, length=12)
                 bio_lines.append(f"🤰 Pregnant {pts}/30  {preg_bar}")
             else:
-                bio_lines.append("Not pregnant")
-            em.add_field(name="Profile", value="\n".join(bio_lines) or "—", inline=True)
+                bio_lines.append("👶 Not pregnant")
+            em.add_field(
+                name=f"{EMOJI_PROFILE} Profile",
+                value="\n".join(bio_lines) or f"{EMOJI_X} —",
+                inline=True,
+            )
 
             em.add_field(
-                name="Sub-skills",
+                name=f"{EMOJI_SUBSKILL} Sub-skills",
                 value=fmt_skill_lines(g.subskills, SUB_SKILLS, g.prefs_subskills),
                 inline=True
             )
+            em.add_field(name=BLANK_FIELD, value=BLANK_FIELD, inline=True)
 
             pages.append(em)
 
