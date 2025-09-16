@@ -344,16 +344,19 @@ class Core(commands.Cog):
             await interaction.response.send_message("Not enough coins.", ephemeral=True)
             return
 
-        pl.currency -= cost
-        save_player(pl)
-
         try:
             girls = roll_gacha(interaction.user.id, times)
         except RuntimeError as exc:
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
-        # re-load to display current state if needed
-        pl = load_player(interaction.user.id)
+        # Re-load to capture any updates from roll_gacha (such as new girls)
+        updated_pl = load_player(interaction.user.id)
+        if not updated_pl:
+            updated_pl = pl
+            updated_pl.girls.extend(girls)
+        updated_pl.currency -= cost
+        save_player(updated_pl)
+        pl = updated_pl
 
         embeds = []
         for g in girls:
