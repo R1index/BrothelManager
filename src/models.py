@@ -1,6 +1,6 @@
 from __future__ import annotations
 from pydantic import BaseModel, Field
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Any, ClassVar, Dict, List, Optional, Tuple
 import time
 
 # -----------------------------------------------------------------------------
@@ -361,7 +361,7 @@ class BrothelState(BaseModel):
 
     last_tick_ts: int = Field(default_factory=now_ts)
 
-    FACILITY_NAMES = ("comfort", "hygiene", "security", "allure")
+    FACILITY_NAMES: ClassVar[Tuple[str, ...]] = ("comfort", "hygiene", "security", "allure")
 
     def ensure_bounds(self):
         for name in self.FACILITY_NAMES:
