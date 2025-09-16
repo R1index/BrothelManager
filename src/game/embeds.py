@@ -118,10 +118,9 @@ def _format_skill_lines(
     skmap: dict,
     names: Iterable[str],
     prefs: dict,
-    header: str,
     icons_map: dict[str, str],
-) -> str:
-    entries: list[str] = []
+) -> list[str]:
+    lines: list[str] = []
     for name in names:
         lvl = get_level(skmap, name)
         xp = get_xp(skmap, name)
@@ -130,17 +129,12 @@ def _format_skill_lines(
         pref = preference_icon(prefs.get(name, "true"))
         icon = icons_map.get(name, "✨")
         progress = f"{xp}/{need}" if need else str(xp)
-        entries.append(f"{pref}{icon} **{name}** L{lvl} [{bar}] {progress}")
+        lines.append(f"{pref}{icon} **{name}** L{lvl} [{bar}] {progress}")
 
-    if not entries:
-        entries = ["❌ No training yet."]
+    if not lines:
+        lines.append("❌ No training yet.")
 
-    lines: list[str] = []
-    if header:
-        lines.append(f"*{header}*")
-        lines.append(EMBED_SPACER)
-    lines.extend(entries)
-    return "\n".join(lines)
+    return lines
 
 
 def _profile_lines(girl: Girl) -> list[str]:
@@ -188,67 +182,71 @@ def build_girl_embed(girl: Girl) -> Tuple[discord.Embed, Optional[str]]:
     girl.normalize_skill_structs()
     girl.apply_regen()
 
-    vit_line = _stat_progress_line(f"{EMOJI_STAT_VIT} Vitality", girl.vitality_level, girl.vitality_xp)
-    end_line = _stat_progress_line(f"{EMOJI_STAT_END} Endurance", girl.endurance_level, girl.endurance_xp)
-    lust_line = _stat_progress_line(f"{EMOJI_LUST} Mastery", girl.lust_level, girl.lust_xp)
+    vit_line = _stat_progress_line(
+        f"{EMOJI_STAT_VIT} Vitality", girl.vitality_level, girl.vitality_xp
+    )
+    end_line = _stat_progress_line(
+        f"{EMOJI_STAT_END} Endurance", girl.endurance_level, girl.endurance_xp
+    )
+    lust_line = _stat_progress_line(
+        f"{EMOJI_LUST} Mastery", girl.lust_level, girl.lust_xp
+    )
     lust_ratio = girl.lust / girl.lust_max if girl.lust_max else 0.0
     mood = lust_state_label(lust_ratio)
     mood_icon = lust_state_icon(lust_ratio)
 
+    hp_bar = make_bar(girl.health, girl.health_max, length=8)
+    sta_bar = make_bar(girl.stamina, girl.stamina_max, length=8)
+    lust_bar = make_bar(girl.lust, girl.lust_max, length=8)
+
     condition_lines = [
         f"{EMOJI_SPARK} Lv **{girl.level}** — EXP {girl.exp}",
         "",
-        f"{EMOJI_HEART} HP **{girl.health}/{girl.health_max}**",
-        f"{EMOJI_ENERGY} STA **{girl.stamina}/{girl.stamina_max}**",
-        f"{mood_icon} {EMOJI_LUST} Lust **{girl.lust}/{girl.lust_max}** • {mood}",
+        f"{EMOJI_HEART} HP **{girl.health}/{girl.health_max}** [{hp_bar}]",
+        f"{EMOJI_ENERGY} STA **{girl.stamina}/{girl.stamina_max}** [{sta_bar}]",
+        f"{mood_icon} {EMOJI_LUST} Lust **{girl.lust}/{girl.lust_max}** [{lust_bar}] {mood}",
         "",
         vit_line,
         end_line,
         lust_line,
     ]
+    left_lines = [f"__{EMOJI_CONDITION} Condition__", *condition_lines]
+
+    profile_lines = _profile_lines(girl)
+    if profile_lines:
+        left_lines.extend([EMBED_SPACER, f"__{EMOJI_PROFILE} Profile__", *profile_lines])
+
     embed.add_field(
         name=f"{EMOJI_CONDITION} Condition",
-        value="\n".join(condition_lines),
+        value="\n".join(left_lines),
         inline=True,
     )
 
-    embed.add_field(name=EMBED_SPACER, value=EMBED_SPACER, inline=True)
-
-    main_skills = _format_skill_lines(
+    main_skill_lines = _format_skill_lines(
         girl.skills,
         MAIN_SKILLS,
         girl.prefs_skills,
-        "Attributes",
         SKILL_ICONS,
     )
-    embed.add_field(
-        name=f"{EMOJI_SKILL} Skills",
-        value=main_skills,
-        inline=True,
-    )
-
-    embed.add_field(name=EMBED_SPACER, value=EMBED_SPACER, inline=True)
-
-    sub_skills = _format_skill_lines(
+    sub_skill_lines = _format_skill_lines(
         girl.subskills,
         SUB_SKILLS,
         girl.prefs_subskills,
-        "Techniques",
         SUB_SKILL_ICONS,
     )
+
+    right_lines = [f"__{EMOJI_SKILL} Skills__", *main_skill_lines]
+    if sub_skill_lines:
+        right_lines.extend(
+            [EMBED_SPACER, f"__{EMOJI_SUBSKILL} Sub-skills__", *sub_skill_lines]
+        )
+
     embed.add_field(
-        name=f"{EMOJI_SUBSKILL} Sub-skills",
-        value=sub_skills,
+        name=f"{EMOJI_SKILL} Skills",
+        value="\n".join(right_lines),
         inline=True,
     )
 
     embed.add_field(name=EMBED_SPACER, value=EMBED_SPACER, inline=True)
-
-    profile_section = "\n".join(_profile_lines(girl))
-    embed.add_field(
-        name=f"{EMOJI_PROFILE} Profile",
-        value=profile_section,
-        inline=True,
-    )
 
     return embed, image_path
