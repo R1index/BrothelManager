@@ -34,11 +34,6 @@ EMOJI_TRAIT = "✨"
 EMOJI_DIMENSION = "📏"
 EMOJI_BODY = "🧍"
 
-FIELD_BORDER_TOP = "╭────────────────"
-FIELD_BORDER_MID = "├────────────────"
-FIELD_BORDER_BOTTOM = "╰────────────────"
-FIELD_LINE_PREFIX = "│"
-
 
 # -----------------------------------------------------------------------------
 # Paginator that supports per-page local file attachments (paths)
@@ -695,17 +690,13 @@ class Core(commands.Cog):
             mood = lust_state_label(lust_ratio)
             mood_icon = lust_state_icon(lust_ratio)
             condition_lines = [
-                FIELD_BORDER_TOP,
-                f"{FIELD_LINE_PREFIX} {EMOJI_SPARK} Lv **{g.level}** • EXP {g.exp}",
-                FIELD_BORDER_MID,
-                f"{FIELD_LINE_PREFIX} {EMOJI_HEART} HP {g.health}/{g.health_max}",
-                f"{FIELD_LINE_PREFIX} {EMOJI_ENERGY} STA {g.stamina}/{g.stamina_max}",
-                f"{FIELD_LINE_PREFIX} {mood_icon} {EMOJI_LUST} Lust {g.lust}/{g.lust_max} • {mood}",
-                FIELD_BORDER_MID,
-                f"{FIELD_LINE_PREFIX} {EMOJI_STAT_VIT} Vitality L{g.vitality_level} [{vit_bar}] {g.vitality_xp}/{vit_need}",
-                f"{FIELD_LINE_PREFIX} {EMOJI_STAT_END} Endurance L{g.endurance_level} [{end_bar}] {g.endurance_xp}/{end_need}",
-                f"{FIELD_LINE_PREFIX} {EMOJI_LUST} Mastery L{g.lust_level} [{lust_bar}] {g.lust_xp}/{lust_need}",
-                FIELD_BORDER_BOTTOM,
+                f"{EMOJI_SPARK} Lv **{g.level}** • EXP {g.exp}",
+                f"{EMOJI_HEART} HP {g.health}/{g.health_max}",
+                f"{EMOJI_ENERGY} STA {g.stamina}/{g.stamina_max}",
+                f"{mood_icon} {EMOJI_LUST} Lust {g.lust}/{g.lust_max} • {mood}",
+                f"{EMOJI_STAT_VIT} Vitality L{g.vitality_level} [{vit_bar}] {g.vitality_xp}/{vit_need}",
+                f"{EMOJI_STAT_END} Endurance L{g.endurance_level} [{end_bar}] {g.endurance_xp}/{end_need}",
+                f"{EMOJI_LUST} Mastery L{g.lust_level} [{lust_bar}] {g.lust_xp}/{lust_need}",
             ]
             em.add_field(
                 name=f"{EMOJI_CONDITION} Condition",
@@ -730,23 +721,17 @@ class Core(commands.Cog):
                         tag = "🔸"
                     progress = f"{xp}/{need}" if need else str(xp)
                     entries.append(
-                        f"{FIELD_LINE_PREFIX} {tag} **{nm}** L{lvl} [{bar}] {progress}"
+                        f"{tag} **{nm}** L{lvl} [{bar}] {progress}"
                     )
 
                 if not entries:
-                    entries = [f"{FIELD_LINE_PREFIX} {EMOJI_X} No training yet."]
+                    entries = [f"{EMOJI_X} No training yet."]
 
-                lines: list[str] = [FIELD_BORDER_TOP]
+                lines: list[str] = []
                 if header:
-                    lines.append(f"{FIELD_LINE_PREFIX} {header}")
-                    lines.append(FIELD_BORDER_MID)
+                    lines.append(f"*{header}*")
 
-                for idx, entry in enumerate(entries):
-                    lines.append(entry)
-                    if idx < len(entries) - 1:
-                        lines.append(FIELD_BORDER_MID)
-
-                lines.append(FIELD_BORDER_BOTTOM)
+                lines.extend(entries)
                 return "\n".join(lines)
 
             em.add_field(
@@ -764,7 +749,7 @@ class Core(commands.Cog):
             if g.body_shape:
                 details.append(f"{EMOJI_BODY} Body **{g.body_shape}**")
             if details:
-                bio_entries.append(f"{FIELD_LINE_PREFIX} {' • '.join(details)}")
+                bio_entries.append(" • ".join(details))
 
             dims = []
             if g.height_cm:
@@ -775,34 +760,28 @@ class Core(commands.Cog):
                 dims.append(f"{g.age} y/o")
             if dims:
                 bio_entries.append(
-                    f"{FIELD_LINE_PREFIX} {EMOJI_DIMENSION} Stats: {' • '.join(dims)}"
+                    f"{EMOJI_DIMENSION} Stats: {' • '.join(dims)}"
                 )
 
             if g.traits:
                 trait_text = " • ".join(g.traits)
-                bio_entries.append(f"{FIELD_LINE_PREFIX} {EMOJI_TRAIT} Traits: {trait_text}")
+                bio_entries.append(f"{EMOJI_TRAIT} Traits: {trait_text}")
 
             if g.pregnant:
                 pts = g.pregnancy_points()
                 preg_bar = make_bar(pts, 30, length=10)
                 bio_entries.append(
-                    f"{FIELD_LINE_PREFIX} 🤰 Pregnant {pts}/30 {preg_bar}"
+                    f"🤰 Pregnant {pts}/30 {preg_bar}"
                 )
             else:
-                bio_entries.append(f"{FIELD_LINE_PREFIX} 👶 Not pregnant")
+                bio_entries.append("👶 Not pregnant")
 
             if not bio_entries:
-                bio_entries.append(f"{FIELD_LINE_PREFIX} {EMOJI_X} —")
+                bio_entries.append(f"{EMOJI_X} —")
 
-            bio_lines = [FIELD_BORDER_TOP]
-            for idx, entry in enumerate(bio_entries):
-                if idx > 0:
-                    bio_lines.append(FIELD_BORDER_MID)
-                bio_lines.append(entry)
-            bio_lines.append(FIELD_BORDER_BOTTOM)
             em.add_field(
                 name=f"{EMOJI_PROFILE} Profile",
-                value="\n".join(bio_lines),
+                value="\n".join(bio_entries),
                 inline=True,
             )
 
