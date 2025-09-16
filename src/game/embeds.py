@@ -127,7 +127,17 @@ def format_training_lines(brothel: BrothelState, girls: Iterable[Girl]) -> list[
         if not mentor or not student:
             continue
         minutes = max(1, (now_ts() - assignment.since_ts) // 60)
-        lines.append(f"📘 {mentor.name} → {student.name} ({minutes}m)")
+        focus_icon = EMOJI_SPARK
+        focus_label = "General"
+        focus_type = (assignment.focus_type or "any").lower()
+        focus_value = assignment.focus or ""
+        if focus_type == "main" and focus_value:
+            focus_icon = SKILL_ICONS.get(focus_value, EMOJI_SKILL)
+            focus_label = focus_value
+        elif focus_type == "sub" and focus_value:
+            focus_icon = SUB_SKILL_ICONS.get(focus_value, EMOJI_SUBSKILL)
+            focus_label = focus_value.title()
+        lines.append(f"📘 {mentor.name} → {student.name} • {focus_icon} {focus_label} ({minutes}m)")
     return lines
 
 

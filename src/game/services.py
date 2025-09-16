@@ -407,6 +407,8 @@ class GameService:
             "base_reward": base_reward,
             "expected_reward": base_reward * success_chance * (reward_multiplier if can_attempt else 0),
             "mentorship_bonus": girl.mentorship_bonus,
+            "mentorship_focus_type": girl.mentorship_focus_type,
+            "mentorship_focus": girl.mentorship_focus,
         }
 
     def resolve_job(self, player: Player, job: Job, girl: Girl) -> dict:
@@ -471,7 +473,41 @@ class GameService:
         renown_before = player.renown
         pool_before = brothel.upkeep_pool
 
-        training_bonus_used = girl.consume_training_bonus()
+        training_bonus_used = 0.0
+        training_focus_type: Optional[str] = None
+        training_focus: Optional[str] = None
+
+        stored_focus_type = (girl.mentorship_focus_type or "any").lower()
+
+        main_bonus = girl.consume_training_bonus_for("main", job.demand_main)
+        if main_bonus > 0:
+            training_bonus_used = max(training_bonus_used, main_bonus)
+            if stored_focus_type == "any":
+                training_focus_type = "any"
+                training_focus = None
+            else:
+                training_focus_type = "main"
+                training_focus = job.demand_main
+
+        sub_bonus = 0.0
+        if sub_name:
+            sub_bonus = girl.consume_training_bonus_for("sub", sub_name)
+            if sub_bonus > training_bonus_used:
+                training_bonus_used = sub_bonus
+                if stored_focus_type == "any":
+                    training_focus_type = "any"
+                    training_focus = None
+                else:
+                    training_focus_type = "sub"
+                    training_focus = sub_name
+
+        legacy_bonus = girl.consume_training_bonus_for("any", None)
+        if legacy_bonus > training_bonus_used:
+            training_bonus_used = legacy_bonus
+            if training_focus_type is None:
+                training_focus_type = "any"
+                training_focus = None
+
         xp_multiplier = 1.0 + training_bonus_used
 
         base_xp_gain = 8 + job.difficulty * 5
@@ -580,6 +616,8 @@ class GameService:
             "lust_ratio_before": info["lust_ratio"],
             "brothel_diff": brothel_diff,
             "training_bonus_used": training_bonus_used,
+            "training_bonus_focus_type": training_focus_type,
+            "training_bonus_focus": training_focus,
             "renown_delta": player.renown - renown_before,
         }
 

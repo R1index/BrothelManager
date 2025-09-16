@@ -26,8 +26,13 @@ from .constants import (
     EMOJI_LUST,
     EMOJI_MARKET,
     EMOJI_OK,
+    EMOJI_SKILL,
+    EMOJI_SPARK,
+    EMOJI_SUBSKILL,
     EMOJI_X,
     FACILITY_INFO,
+    SKILL_ICONS,
+    SUB_SKILL_ICONS,
 )
 from .embeds import brothel_overview_lines
 from .utils import lust_state_icon, lust_state_label
@@ -138,6 +143,29 @@ class MarketWorkView(discord.ui.View):
         self.add_item(self.job_select)
         self._apply_state(player, market)
 
+    @staticmethod
+    def _training_focus_display(focus_type: Optional[str], focus_value: Optional[str]) -> tuple[str, str]:
+        focus_kind = (focus_type or "any").lower()
+        if focus_kind == "main" and focus_value:
+            icon = SKILL_ICONS.get(focus_value, EMOJI_SKILL)
+            return icon, focus_value
+        if focus_kind == "sub" and focus_value:
+            icon = SUB_SKILL_ICONS.get(focus_value, EMOJI_SUBSKILL)
+            return icon, focus_value.title()
+        return EMOJI_SPARK, "General"
+
+    @staticmethod
+    def _training_matches_job(focus_type: Optional[str], focus_value: Optional[str], job) -> bool:
+        kind = (focus_type or "any").lower()
+        if kind == "any":
+            return True
+        if kind == "main":
+            return bool(focus_value) and focus_value.lower() == job.demand_main.lower()
+        if kind == "sub":
+            sub_name = getattr(job, "demand_sub", "") or ""
+            return bool(focus_value) and sub_name and focus_value.lower() == sub_name.lower()
+        return False
+
     def _apply_state(self, player=None, market=None):
         if player is not None:
             self._player_cache = player
@@ -203,7 +231,13 @@ class MarketWorkView(discord.ui.View):
                 desc = f"📘 Training • {desc}"
                 emoji = "📘"
             elif g.mentorship_bonus > 0:
-                desc = f"📈 Boost {int(g.mentorship_bonus * 100)}% • {desc}"
+                icon, label = self._training_focus_display(
+                    g.mentorship_focus_type, g.mentorship_focus
+                )
+                desc = (
+                    f"📈 {icon} {label} +{int(g.mentorship_bonus * 100)}% • "
+                    f"{desc}"
+                )
             options.append(
                 discord.SelectOption(
                     label=label[:100],
@@ -396,10 +430,21 @@ class MarketWorkView(discord.ui.View):
                     value_lines.append(
                         f"{EMOJI_COIN} Potential: **{potential_pay}** (x{info['reward_multiplier']:.2f}) • E≈ {expected_pay}"
                     )
-                    if info.get("mentorship_bonus"):
-                        value_lines.append(
-                            f"📈 Mentorship boost ready: +{int(info['mentorship_bonus'] * 100)}% XP"
-                        )
+                    bonus_ready = info.get("mentorship_bonus") or 0.0
+                    if bonus_ready:
+                        focus_type = info.get("mentorship_focus_type")
+                        focus_value = info.get("mentorship_focus")
+                        icon, label = self._training_focus_display(focus_type, focus_value)
+                        matches = self._training_matches_job(focus_type, focus_value, job)
+                        pct = int(bonus_ready * 100)
+                        if matches:
+                            value_lines.append(
+                                f"📈 Mentorship boost ready: +{pct}% XP ({icon} {label})"
+                            )
+                        elif (focus_type or "").lower() != "any":
+                            value_lines.append(
+                                f"📘 Mentor focus: {icon} {label} (pick matching job to use boost)"
+                            )
             else:
                 value_lines.append("Use the selectors to preview with one of your girls.")
 
@@ -457,9 +502,15 @@ class MarketWorkView(discord.ui.View):
         if diff_parts:
             lines.append(f"{EMOJI_FACILITY} {' • '.join(diff_parts)}")
 
-        if result.get("training_bonus_used"):
+        bonus_used = result.get("training_bonus_used") or 0.0
+        if bonus_used:
+            icon, label = self._training_focus_display(
+                result.get("training_bonus_focus_type"),
+                result.get("training_bonus_focus"),
+            )
+            suffix = f" ({icon} {label})" if label else ""
             lines.append(
-                f"📈 Mentorship applied: +{int(result['training_bonus_used'] * 100)}% XP"
+                f"📈 Mentorship applied: +{int(bonus_used * 100)}% XP{suffix}"
             )
         if result.get("renown_delta"):
             lines.append(f"📣 Renown {result['renown_delta']:+}")

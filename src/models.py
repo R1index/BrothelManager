@@ -211,6 +211,8 @@ class Girl(BaseModel):
 
     mentorship_bonus: float = 0.0
     mentorship_from: Optional[str] = None
+    mentorship_focus_type: Optional[str] = None
+    mentorship_focus: Optional[str] = None
 
     def apply_regen(self, brothel: Optional["BrothelState"] = None):
         self.ensure_stat_defaults()
@@ -359,19 +361,67 @@ class Girl(BaseModel):
         self.recalc_limits()
         self.lust = min(self.lust, self.lust_max)
 
-    def consume_training_bonus(self) -> float:
-        bonus = max(0.0, float(self.mentorship_bonus))
+    def _clear_training_bonus(self):
         self.mentorship_bonus = 0.0
-        if bonus <= 0:
-            self.mentorship_from = None
+        self.mentorship_from = None
+        self.mentorship_focus_type = None
+        self.mentorship_focus = None
+
+    def consume_training_bonus_for(self, focus_type: str, skill_name: Optional[str]) -> float:
+        if self.mentorship_bonus <= 0:
+            return 0.0
+
+        stored_type = (self.mentorship_focus_type or "any").lower()
+        stored_name = (self.mentorship_focus or "").lower()
+        req_type = (focus_type or "").lower()
+        req_name = (skill_name or "").lower()
+
+        if req_type == "any":
+            if stored_type != "any":
+                return 0.0
+            bonus = self.mentorship_bonus
+            self._clear_training_bonus()
+            return bonus
+
+        if stored_type == "any":
+            bonus = self.mentorship_bonus
+            self._clear_training_bonus()
+            return bonus
+
+        if stored_type != req_type:
+            return 0.0
+        if stored_name and stored_name != req_name:
+            return 0.0
+
+        bonus = self.mentorship_bonus
+        self._clear_training_bonus()
         return bonus
 
-    def grant_training_bonus(self, source_uid: str, amount: float):
+    def consume_training_bonus(self) -> float:
+        return self.consume_training_bonus_for("any", None)
+
+    def grant_training_bonus(
+        self,
+        source_uid: str,
+        amount: float,
+        focus_type: str,
+        focus: Optional[str],
+    ):
         amount = max(0.0, float(amount))
         if amount <= 0:
             return
+
+        normalized_type = (focus_type or "any").lower()
+        if normalized_type not in {"main", "sub"}:
+            normalized_type = "any"
+
+        focus = (focus or "").strip()
+        focus_value = focus if focus else None
+
         self.mentorship_bonus = min(1.0, amount)
         self.mentorship_from = source_uid
+        self.mentorship_focus_type = normalized_type
+        self.mentorship_focus = focus_value
 
 class Job(BaseModel):
     # Future: multiple sub-skill demands
@@ -434,6 +484,24 @@ class BrothelState(BaseModel):
             key = (assign.mentor_uid, assign.student_uid)
             if assign.mentor_uid == assign.student_uid or key in seen:
                 continue
+            focus_type = (assign.focus_type or "any").lower()
+            if focus_type not in {"main", "sub"}:
+                focus_type = "any"
+            assign.focus_type = focus_type
+            if focus_type == "main" and assign.focus:
+                normalized = next(
+                    (name for name in MAIN_SKILLS if name.lower() == str(assign.focus).lower()),
+                    str(assign.focus),
+                )
+                assign.focus = normalized
+            elif focus_type == "sub" and assign.focus:
+                normalized = next(
+                    (name for name in SUB_SKILLS if name.lower() == str(assign.focus).lower()),
+                    str(assign.focus),
+                )
+                assign.focus = normalized
+            else:
+                assign.focus = None
             seen.add(key)
             cleaned_training.append(assign)
         self.training = cleaned_training
@@ -621,12 +689,41 @@ class BrothelState(BaseModel):
         self.training = [t for t in self.training if t is not assign]
         return assign
 
-    def start_training(self, mentor_uid: str, student_uid: str) -> Optional["TrainingAssignment"]:
+    def start_training(
+        self,
+        mentor_uid: str,
+        student_uid: str,
+        focus_type: str,
+        focus: str,
+    ) -> Optional["TrainingAssignment"]:
+        focus_type_norm = (focus_type or "").lower()
+        focus_value = (focus or "").strip()
+        if focus_type_norm == "main":
+            focus_canonical = next(
+                (name for name in MAIN_SKILLS if name.lower() == focus_value.lower()),
+                None,
+            )
+        elif focus_type_norm == "sub":
+            focus_canonical = next(
+                (name for name in SUB_SKILLS if name.lower() == focus_value.lower()),
+                None,
+            )
+        else:
+            focus_canonical = None
+
+        if not focus_canonical:
+            return None
+
         if mentor_uid == student_uid:
             return None
         if self.training_for(mentor_uid) or self.training_for(student_uid):
             return None
-        assignment = TrainingAssignment(mentor_uid=mentor_uid, student_uid=student_uid)
+        assignment = TrainingAssignment(
+            mentor_uid=mentor_uid,
+            student_uid=student_uid,
+            focus_type=focus_type_norm,
+            focus=focus_canonical,
+        )
         self.training.append(assignment)
         return assignment
 
@@ -639,6 +736,8 @@ def market_level_from_rep(rep: int) -> int:
 class TrainingAssignment(BaseModel):
     mentor_uid: str
     student_uid: str
+    focus_type: str = "any"
+    focus: Optional[str] = None
     since_ts: int = Field(default_factory=now_ts)
 
 class Market(BaseModel):

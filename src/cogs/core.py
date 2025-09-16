@@ -22,6 +22,9 @@ from ..storage import (
     girl_leaderboard,
 )
 from ..models import (
+    MAIN_SKILLS,
+    SUB_SKILLS,
+    PREF_BLOCKED,
     RARITY_COLORS,
     make_bar,
     market_level_from_rep,
@@ -374,11 +377,22 @@ class Core(commands.Cog):
             app_commands.Choice(name="List", value="list"),
             app_commands.Choice(name="Assign", value="assign"),
             app_commands.Choice(name="Finish", value="finish"),
-        ]
+        ],
+        focus_type=[
+            app_commands.Choice(name="Main skill", value="main"),
+            app_commands.Choice(name="Sub-skill", value="sub"),
+        ],
+        main_skill=[app_commands.Choice(name=name, value=name) for name in MAIN_SKILLS],
+        sub_skill=[
+            app_commands.Choice(name=name.title(), value=name) for name in SUB_SKILLS
+        ],
     )
     @app_commands.describe(
         mentor="Mentor girl UID",
         student="Student girl UID",
+        focus_type="Focus category for the mentorship",
+        main_skill="Main skill to train",
+        sub_skill="Sub-skill to train",
     )
     async def train(
         self,
@@ -386,6 +400,9 @@ class Core(commands.Cog):
         action: app_commands.Choice[str],
         mentor: Optional[str] = None,
         student: Optional[str] = None,
+        focus_type: Optional[app_commands.Choice[str]] = None,
+        main_skill: Optional[app_commands.Choice[str]] = None,
+        sub_skill: Optional[app_commands.Choice[str]] = None,
     ):
         pl = load_player(interaction.user.id)
         if not pl:
@@ -397,6 +414,14 @@ class Core(commands.Cog):
         for g in pl.girls:
             g.normalize_skill_structs()
             g.apply_regen(brothel)
+
+        def focus_display(kind: Optional[str], value: Optional[str]) -> str:
+            normalized = (kind or "any").lower()
+            if normalized == "main" and value:
+                return f"{value} (main skill)"
+            if normalized == "sub" and value:
+                return f"{value.title()} (sub-skill)"
+            return "general technique"
 
         action_val = (choice_value(action) or "list").lower()
 
@@ -412,8 +437,9 @@ class Core(commands.Cog):
                 if not mentor_girl or not student_girl:
                     continue
                 minutes = int((now_ts - assignment.since_ts) // 60)
+                focus_text = focus_display(assignment.focus_type, assignment.focus)
                 lines.append(
-                    f"📘 **{mentor_girl.name}** → **{student_girl.name}** • {minutes} min"
+                    f"📘 **{mentor_girl.name}** → **{student_girl.name}** • {focus_text} • {minutes} min"
                 )
             await interaction.response.send_message("\n".join(lines[:20]), ephemeral=True)
             save_player(pl)
@@ -446,13 +472,75 @@ class Core(commands.Cog):
                 )
                 return
 
-            assignment = brothel.start_training(mentor_girl.uid, student_girl.uid)
+            main_choice_val = choice_value(main_skill)
+            sub_choice_val = choice_value(sub_skill)
+            focus_type_val = (choice_value(focus_type) or "").lower()
+
+            if main_choice_val and sub_choice_val:
+                await interaction.response.send_message(
+                    "Select either a main skill or a sub-skill, not both.", ephemeral=True
+                )
+                return
+
+            if focus_type_val not in {"main", "sub"}:
+                if main_choice_val and not sub_choice_val:
+                    focus_type_val = "main"
+                elif sub_choice_val and not main_choice_val:
+                    focus_type_val = "sub"
+
+            if focus_type_val == "main":
+                focus_name = main_choice_val
+            elif focus_type_val == "sub":
+                focus_name = sub_choice_val
+            else:
+                await interaction.response.send_message(
+                    "Specify which skill category to train (main or sub).", ephemeral=True
+                )
+                return
+
+            if not focus_name:
+                await interaction.response.send_message(
+                    "Select a concrete skill for the mentorship.", ephemeral=True
+                )
+                return
+
+            if focus_type_val == "main" and focus_name not in MAIN_SKILLS:
+                await interaction.response.send_message("Unknown main skill.", ephemeral=True)
+                return
+            if focus_type_val == "sub" and focus_name not in SUB_SKILLS:
+                await interaction.response.send_message("Unknown sub-skill.", ephemeral=True)
+                return
+
+            if focus_type_val == "main":
+                if mentor_girl.prefs_skills.get(focus_name, "true") == PREF_BLOCKED or student_girl.prefs_skills.get(
+                    focus_name, "true"
+                ) == PREF_BLOCKED:
+                    await interaction.response.send_message(
+                        "Blocked skills cannot be taught or studied.", ephemeral=True
+                    )
+                    return
+            else:
+                if mentor_girl.prefs_subskills.get(focus_name, "true") == PREF_BLOCKED or student_girl.prefs_subskills.get(
+                    focus_name, "true"
+                ) == PREF_BLOCKED:
+                    await interaction.response.send_message(
+                        "Blocked sub-skills cannot be taught or studied.", ephemeral=True
+                    )
+                    return
+
+            assignment = brothel.start_training(
+                mentor_girl.uid,
+                student_girl.uid,
+                focus_type_val,
+                focus_name,
+            )
             if not assignment:
                 await interaction.response.send_message("Unable to start training.", ephemeral=True)
                 return
             save_player(pl)
+            focus_text = focus_display(focus_type_val, focus_name)
             await interaction.response.send_message(
-                f"📘 **{mentor_girl.name}** is now mentoring **{student_girl.name}**.",
+                f"📘 **{mentor_girl.name}** is now mentoring **{student_girl.name}** in {focus_text}.",
                 ephemeral=True,
             )
             return
@@ -488,10 +576,21 @@ class Core(commands.Cog):
             bonus += skill_gap * 0.002
             bonus += max(0, mentor_girl.vitality_level - student_girl.vitality_level) * 0.01
             bonus = min(0.6, bonus)
-            student_girl.grant_training_bonus(mentor_girl.uid, bonus)
+            focus_kind = assignment.focus_type or "any"
+            student_girl.grant_training_bonus(
+                mentor_girl.uid,
+                bonus,
+                focus_kind,
+                assignment.focus,
+            )
             save_player(pl)
+            focus_text = focus_display(focus_kind, assignment.focus)
+            focus_kind_norm = (focus_kind or "any").lower()
+            target_line = (
+                "next job" if focus_kind_norm == "any" else f"next {focus_text} job"
+            )
             await interaction.response.send_message(
-                f"📘 Training finished. **{student_girl.name}** gains +{int(bonus * 100)}% XP on next job.",
+                f"📘 Training finished. **{student_girl.name}** gains +{int(bonus * 100)}% XP on {target_line}.",
                 ephemeral=True,
             )
             return
