@@ -466,6 +466,7 @@ class GameService:
         brothel = player.ensure_brothel()
         girl.apply_regen(brothel)
         brothel.apply_decay()
+        player.renown = brothel.renown
 
         if girl.pregnant:
             return {"ok": False, "reason": "Girl is pregnant", "reward": 0}

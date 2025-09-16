@@ -168,6 +168,7 @@ class Core(commands.Cog):
         # Normalize / regen before render
         brothel = pl.ensure_brothel()
         brothel.apply_decay()
+        pl.renown = brothel.renown
         for g in pl.girls:
             g.normalize_skill_structs()
             g.apply_regen(brothel)
@@ -227,6 +228,7 @@ class Core(commands.Cog):
 
         brothel = pl.ensure_brothel()
         brothel.apply_decay()
+        pl.renown = brothel.renown
 
         action_val = (choice_value(action, default="view") or "view").lower()
         if action_val not in {"view", "upgrade", "maintain", "promote"}:
@@ -411,6 +413,7 @@ class Core(commands.Cog):
 
         brothel = pl.ensure_brothel()
         brothel.apply_decay()
+        pl.renown = brothel.renown
         for g in pl.girls:
             g.normalize_skill_structs()
             g.apply_regen(brothel)
@@ -681,6 +684,7 @@ class Core(commands.Cog):
 
         brothel = pl.ensure_brothel()
         brothel.apply_decay()
+        pl.renown = brothel.renown
         for g in pl.girls:
             g.normalize_skill_structs()
             g.apply_regen(brothel)

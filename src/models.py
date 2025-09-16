@@ -268,6 +268,14 @@ class Girl(BaseModel):
         elapsed = max(0, now_ts() - self.pregnant_since_ts)
         return int(min(PREGNANCY_TOTAL_POINTS, elapsed // PREGNANCY_TICK_SECONDS))
 
+    def pregnancy_progress_points(self) -> int:
+        """Alias for pregnancy progress used by presentation helpers."""
+        return self.pregnancy_points()
+
+    def pregnancy_total_points(self) -> int:
+        """Total number of points required to complete a pregnancy."""
+        return PREGNANCY_TOTAL_POINTS
+
     def normalize_skill_structs(self):
         """Normalize legacy data structures for skills/subskills and preferences."""
         self.skills    = normalize_skill_map(self.skills)
