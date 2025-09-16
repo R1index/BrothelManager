@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import random
 import time
 from typing import Iterable, List, Optional, Tuple
@@ -32,6 +33,49 @@ class GameService:
 
     def __init__(self, store: DataStore | None = None):
         self.store = store or DataStore()
+        self._config_cache: dict | None = None
+
+    def _load_config(self) -> dict:
+        if self._config_cache is not None:
+            return self._config_cache
+
+        path = self.store.base_dir / "config.json"
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (FileNotFoundError, json.JSONDecodeError):
+            data = {}
+
+        if not isinstance(data, dict):
+            data = {}
+
+        self._config_cache = data
+        return self._config_cache
+
+    def _starter_girl_from_config(self, entries: List[dict]) -> Optional[dict]:
+        config = self._load_config()
+        gacha_cfg = config.get("gacha")
+        if not isinstance(gacha_cfg, dict):
+            return None
+
+        raw_id = gacha_cfg.get("starter_girl_id")
+        if not raw_id:
+            return None
+
+        starter_id = str(raw_id).strip()
+        if not starter_id:
+            return None
+
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            entry_id = entry.get("id")
+            if entry_id is None:
+                continue
+            if str(entry_id) == starter_id:
+                return entry
+
+        return None
 
     # ------------------------------------------------------------------
     # Player persistence
@@ -120,12 +164,14 @@ class GameService:
         if not entries:
             raise RuntimeError("Girls catalog is empty.")
 
-        weights = [
-            {"R": 70, "SR": 20, "SSR": 9, "UR": 1}.get(entry.get("rarity", "R"), 1)
-            for entry in entries
-        ]
-        index = random.choices(range(len(entries)), weights=weights, k=1)[0]
-        base_entry = entries[index]
+        base_entry = self._starter_girl_from_config(entries)
+        if base_entry is None:
+            weights = [
+                {"R": 70, "SR": 20, "SSR": 9, "UR": 1}.get(entry.get("rarity", "R"), 1)
+                for entry in entries
+            ]
+            index = random.choices(range(len(entries)), weights=weights, k=1)[0]
+            base_entry = entries[index]
 
         player = Player(user_id=uid, currency=500, girls=[])
         brothel = player.ensure_brothel()
