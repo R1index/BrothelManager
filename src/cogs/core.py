@@ -767,22 +767,52 @@ class Core(commands.Cog):
 
         if not confirm:
             class ConfirmView(discord.ui.View):
-                def __init__(self, invoker_id):
+                def __init__(self, invoker_id: int, girl_uid: str):
                     super().__init__(timeout=20)
                     self.invoker_id = invoker_id
+                    self.girl_uid = girl_uid
 
                 @discord.ui.button(label="Confirm", style=discord.ButtonStyle.danger, emoji="💥")
                 async def confirm_btn(self, i: discord.Interaction, b: discord.ui.Button):
                     if i.user.id != self.invoker_id:
                         await i.response.send_message("This isn't your view.", ephemeral=True)
                         return
-                    res = dismantle_girl(pl, girl_id)
-                    save_player(pl)
-                    await i.response.edit_message(
-                        content=f"{EMOJI_OK} Dismantled **{res['name']}** [{res['rarity']}] → {EMOJI_COIN} **{res['reward']}**",
-                        view=None,
-                        embed=None,
-                    )
+
+                    fresh_player = load_player(self.invoker_id)
+                    if not fresh_player:
+                        await i.response.edit_message(
+                            content=f"{EMOJI_X} Profile not found.",
+                            view=None,
+                            embed=None,
+                        )
+                        return
+
+                    target_girl = fresh_player.get_girl(self.girl_uid)
+                    if not target_girl:
+                        await i.response.edit_message(
+                            content=f"{EMOJI_X} Girl not found or already dismantled.",
+                            view=None,
+                            embed=None,
+                        )
+                        return
+
+                    res = dismantle_girl(fresh_player, self.girl_uid)
+                    if res.get("ok"):
+                        save_player(fresh_player)
+                        await i.response.edit_message(
+                            content=(
+                                f"{EMOJI_OK} Dismantled **{res['name']}** [{res['rarity']}] "
+                                f"→ {EMOJI_COIN} **{res['reward']}**"
+                            ),
+                            view=None,
+                            embed=None,
+                        )
+                    else:
+                        await i.response.edit_message(
+                            content=f"{EMOJI_X} {res.get('reason', 'Failed')}",
+                            view=None,
+                            embed=None,
+                        )
 
                 @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
                 async def cancel_btn(self, i: discord.Interaction, b: discord.ui.Button):
@@ -802,10 +832,19 @@ class Core(commands.Cog):
             img = profile_image_path(g.name, g.base_id)
             if img and os.path.exists(img):
                 embed.set_image(url=f"attachment://{os.path.basename(img)}")
-                await interaction.response.send_message(embed=embed, view=ConfirmView(interaction.user.id), ephemeral=True, file=discord.File(img))
+                await interaction.response.send_message(
+                    embed=embed,
+                    view=ConfirmView(interaction.user.id, girl_id),
+                    ephemeral=True,
+                    file=discord.File(img),
+                )
             else:
                 embed.set_image(url=g.image_url)
-                await interaction.response.send_message(embed=embed, view=ConfirmView(interaction.user.id), ephemeral=True)
+                await interaction.response.send_message(
+                    embed=embed,
+                    view=ConfirmView(interaction.user.id, girl_id),
+                    ephemeral=True,
+                )
             return
 
         res = dismantle_girl(pl, girl_id)
