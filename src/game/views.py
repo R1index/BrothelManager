@@ -147,15 +147,14 @@ class MarketWorkView(discord.ui.View):
         player = self._player_cache
         market = self._market_cache
 
-        if player:
-            player.ensure_brothel()
+        brothel = player.ensure_brothel() if player else None
 
         if player and self.selected_girl_uid and not player.get_girl(self.selected_girl_uid):
             self.selected_girl_uid = None
         if market and self.selected_job_id and not any(j.job_id == self.selected_job_id for j in market.jobs):
             self.selected_job_id = None
 
-        self.girl_select.options = self._build_girl_options(player)
+        self.girl_select.options = self._build_girl_options(player, brothel)
         self.girl_select.disabled = not (player and player.girls)
 
         self.job_select.options = self._build_job_options(market)
@@ -164,18 +163,21 @@ class MarketWorkView(discord.ui.View):
         if no_jobs:
             self.selected_job_id = None
 
-        self._update_controls()
+        self._update_controls(player, brothel)
 
-    def _update_controls(self):
+    def _update_controls(self, player=None, brothel=None):
         can_work = (
             self.selected_girl_uid is not None
             and self.selected_job_id is not None
             and self._market_cache
             and any(j.job_id == self.selected_job_id for j in self._market_cache.jobs)
         )
-        self.work_btn.disabled = not can_work
+        in_training = False
+        if brothel and self.selected_girl_uid:
+            in_training = brothel.training_for(self.selected_girl_uid) is not None
+        self.work_btn.disabled = (not can_work) or in_training
 
-    def _build_girl_options(self, player) -> list[discord.SelectOption]:
+    def _build_girl_options(self, player, brothel) -> list[discord.SelectOption]:
         options = [
             discord.SelectOption(
                 label="— No preview —",
@@ -196,13 +198,19 @@ class MarketWorkView(discord.ui.View):
                 f"{EMOJI_ENERGY} {g.stamina}/{g.stamina_max} • "
                 f"{EMOJI_LUST} {g.lust}/{g.lust_max} [{mood}]"
             )
+            emoji = EMOJI_GIRL
+            if brothel and brothel.training_for(g.uid):
+                desc = f"📘 Training • {desc}"
+                emoji = "📘"
+            elif g.mentorship_bonus > 0:
+                desc = f"📈 Boost {int(g.mentorship_bonus * 100)}% • {desc}"
             options.append(
                 discord.SelectOption(
                     label=label[:100],
                     value=g.uid,
                     description=desc[:100],
                     default=g.uid == self.selected_girl_uid,
-                    emoji=EMOJI_GIRL,
+                    emoji=emoji,
                 )
             )
         return options
@@ -257,7 +265,7 @@ class MarketWorkView(discord.ui.View):
         brothel.apply_decay()
         for g in pl.girls:
             g.normalize_skill_structs()
-            g.apply_regen()
+            g.apply_regen(brothel)
         save_player(pl)
         return pl
 
@@ -294,7 +302,8 @@ class MarketWorkView(discord.ui.View):
             desc_parts.append("\n".join(self.last_result_lines))
 
         if brothel:
-            overview, reserves = brothel_overview_lines(brothel)
+            girl_count = len(player.girls) if player else None
+            overview, reserves = brothel_overview_lines(brothel, girl_count)
             desc_parts.append(overview)
             desc_parts.append(reserves)
 
@@ -328,6 +337,8 @@ class MarketWorkView(discord.ui.View):
                 info = evaluate_job(girl_for_preview, job, brothel)
                 if info["blocked_main"] or (job.demand_sub and info["blocked_sub"]):
                     value_lines.append("🚫 Preferences block this job.")
+                elif info.get("training_blocked"):
+                    value_lines.append("📘 Girl is in mentorship training.")
                 elif not info["meets_main"] or not info["meets_sub"]:
                     lacking = []
                     if not info["meets_main"]:
@@ -358,6 +369,10 @@ class MarketWorkView(discord.ui.View):
                     value_lines.append(
                         f"{EMOJI_COIN} Potential: **{potential_pay}** (x{info['reward_multiplier']:.2f}) • E≈ {expected_pay}"
                     )
+                    if info.get("mentorship_bonus"):
+                        value_lines.append(
+                            f"📈 Mentorship boost ready: +{int(info['mentorship_bonus'] * 100)}% XP"
+                        )
             else:
                 value_lines.append("Use the selectors to preview with one of your girls.")
 
@@ -408,21 +423,19 @@ class MarketWorkView(discord.ui.View):
             diff_parts.append(f"🧼 {diff['cleanliness']:+}")
         if diff.get("morale"):
             diff_parts.append(f"😊 {diff['morale']:+}")
-        if diff.get("popularity"):
-            diff_parts.append(f"📣 {diff['popularity']:+}")
+        if diff.get("renown"):
+            diff_parts.append(f"📣 {diff['renown']:+}")
         if diff.get("upkeep"):
             diff_parts.append(f"{EMOJI_COIN} {diff['upkeep']:+}")
         if diff_parts:
             lines.append(f"{EMOJI_FACILITY} {' • '.join(diff_parts)}")
 
-        level_diff = result.get("brothel_levels") or {}
-        level_parts = []
-        for key, delta in level_diff.items():
-            if delta > 0:
-                icon, label = FACILITY_INFO.get(key, ("✨", key.title()))
-                level_parts.append(f"{icon} {label} +{delta}")
-        if level_parts:
-            lines.append(f"{EMOJI_FACILITY} Upgrades: {', '.join(level_parts)}")
+        if result.get("training_bonus_used"):
+            lines.append(
+                f"📈 Mentorship applied: +{int(result['training_bonus_used'] * 100)}% XP"
+            )
+        if result.get("renown_delta"):
+            lines.append(f"📣 Renown {result['renown_delta']:+}")
         return lines
 
     class GirlSelect(discord.ui.Select):

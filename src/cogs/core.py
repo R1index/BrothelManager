@@ -1,7 +1,6 @@
 import os
 import time
-import os
-from typing import Any
+from typing import Any, Optional
 
 import discord
 from discord import app_commands
@@ -19,6 +18,8 @@ from ..storage import (
     dismantle_girl,
     evaluate_job,
     iter_user_ids,
+    brothel_leaderboard,
+    girl_leaderboard,
 )
 from ..models import (
     RARITY_COLORS,
@@ -95,10 +96,10 @@ class Core(commands.Cog):
         elif brothel.morale > 90:
             notes.append("🎉 Spirits are high — expect better service quality.")
 
-        if brothel.popularity < 25:
-            notes.append("📣 Consider promotions to attract more clientele.")
-        elif brothel.popularity > 120:
-            notes.append("🔥 Demand is surging; premium jobs may appear more often.")
+        if brothel.renown < 25:
+            notes.append("📣 Renown is low — consider promotions.")
+        elif brothel.renown > 160:
+            notes.append("🔥 Renown is soaring; expect premium clients.")
 
         comfort_lvl = brothel.facility_level("comfort")
         security_lvl = brothel.facility_level("security")
@@ -166,11 +167,11 @@ class Core(commands.Cog):
         brothel.apply_decay()
         for g in pl.girls:
             g.normalize_skill_structs()
-            g.apply_regen()
+            g.apply_regen(brothel)
         save_player(pl)
 
         # Reputation progress to next market level
-        rep = int(pl.reputation)
+        rep = int(pl.renown)
         mkt_lvl = market_level_from_rep(rep)
         next_cap = (mkt_lvl + 1) * 100
         base_cap = mkt_lvl * 100
@@ -181,10 +182,10 @@ class Core(commands.Cog):
         embed = discord.Embed(title=f"{interaction.user.display_name}'s Profile", color=0x60A5FA)
         embed.add_field(name=f"{EMOJI_COIN} Coins", value=str(pl.currency))
         embed.add_field(name=f"{EMOJI_GIRL} Girls", value=str(len(pl.girls)))
-        embed.add_field(name="⭐ Reputation", value=f"{rep} / {next_cap}  {rep_bar}", inline=False)
+        embed.add_field(name="⭐ Renown", value=f"{rep} / {next_cap}  {rep_bar}", inline=False)
         embed.add_field(name="🏷️ Market Level", value=str(mkt_lvl))
 
-        overview, reserves = brothel_overview_lines(brothel)
+        overview, reserves = brothel_overview_lines(brothel, len(pl.girls))
         embed.add_field(name=f"{EMOJI_FACILITY} Brothel", value=f"{overview}\n{reserves}", inline=False)
         facility_lines = "\n".join(brothel_facility_lines(brothel))
         embed.add_field(name="Facilities", value=facility_lines, inline=False)
@@ -197,6 +198,7 @@ class Core(commands.Cog):
             app_commands.Choice(name="Upgrade facility", value="upgrade"),
             app_commands.Choice(name="Maintain cleanliness", value="maintain"),
             app_commands.Choice(name="Promote services", value="promote"),
+            app_commands.Choice(name="Expand rooms", value="expand"),
         ]
     )
     @app_commands.choices(
@@ -284,14 +286,26 @@ class Core(commands.Cog):
         elif action_val == "promote":
             result = brothel.promote(invest)
             notes.append(
-                f"{EMOJI_POPULARITY} Popularity +{result['popularity']} (now {brothel.popularity})."
+                f"{EMOJI_POPULARITY} Renown +{result['renown']} (now {brothel.renown})."
             )
             if result.get("morale"):
                 notes.append(
                     f"{EMOJI_MORALE} Morale +{result['morale']} (now {brothel.morale}/100)."
                 )
+            pl.renown = brothel.renown
+        elif action_val == "expand":
+            result = brothel.expand_rooms(invest)
+            if result.get("rooms"):
+                notes.append(
+                    f"{EMOJI_ROOMS} Rooms +{result['rooms']} (now {brothel.rooms})."
+                )
+            else:
+                notes.append(
+                    f"{EMOJI_ROOMS} Progress {result['progress']}/{result['next_cost']} to next room."
+                )
 
         brothel.ensure_bounds()
+        pl.renown = brothel.renown
         save_player(pl)
 
         embed = self._build_brothel_embed(
@@ -309,6 +323,17 @@ class Core(commands.Cog):
         if not pl:
             await interaction.response.send_message("Use /start first.", ephemeral=True)
             return
+        brothel = pl.ensure_brothel()
+        slots_left = brothel.rooms - len(pl.girls)
+        if slots_left <= 0:
+            await interaction.response.send_message("All rooms are occupied. Expand your brothel first.", ephemeral=True)
+            return
+        if times > slots_left:
+            await interaction.response.send_message(
+                f"Only {slots_left} room(s) available. Reduce rolls or expand rooms.",
+                ephemeral=True,
+            )
+            return
         cost = 100 * times
         if pl.currency < cost:
             await interaction.response.send_message("Not enough coins.", ephemeral=True)
@@ -317,7 +342,11 @@ class Core(commands.Cog):
         pl.currency -= cost
         save_player(pl)
 
-        girls = roll_gacha(interaction.user.id, times)
+        try:
+            girls = roll_gacha(interaction.user.id, times)
+        except RuntimeError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
         # re-load to display current state if needed
         pl = load_player(interaction.user.id)
 
@@ -339,6 +368,134 @@ class Core(commands.Cog):
             embeds=embeds[:10],
         )
 
+    @app_commands.command(name="train", description="Manage mentorship training assignments")
+    @app_commands.choices(
+        action=[
+            app_commands.Choice(name="List", value="list"),
+            app_commands.Choice(name="Assign", value="assign"),
+            app_commands.Choice(name="Finish", value="finish"),
+        ]
+    )
+    @app_commands.describe(
+        mentor="Mentor girl UID",
+        student="Student girl UID",
+    )
+    async def train(
+        self,
+        interaction: discord.Interaction,
+        action: app_commands.Choice[str],
+        mentor: Optional[str] = None,
+        student: Optional[str] = None,
+    ):
+        pl = load_player(interaction.user.id)
+        if not pl:
+            await interaction.response.send_message("Use /start first.", ephemeral=True)
+            return
+
+        brothel = pl.ensure_brothel()
+        brothel.apply_decay()
+        for g in pl.girls:
+            g.normalize_skill_structs()
+            g.apply_regen(brothel)
+
+        action_val = (choice_value(action) or "list").lower()
+
+        if action_val == "list":
+            if not brothel.training:
+                await interaction.response.send_message("No active mentorships.", ephemeral=True)
+                return
+            lines: list[str] = []
+            now_ts = time.time()
+            for assignment in brothel.training:
+                mentor_girl = pl.get_girl(assignment.mentor_uid)
+                student_girl = pl.get_girl(assignment.student_uid)
+                if not mentor_girl or not student_girl:
+                    continue
+                minutes = int((now_ts - assignment.since_ts) // 60)
+                lines.append(
+                    f"📘 **{mentor_girl.name}** → **{student_girl.name}** • {minutes} min"
+                )
+            await interaction.response.send_message("\n".join(lines[:20]), ephemeral=True)
+            save_player(pl)
+            return
+
+        if action_val == "assign":
+            if not mentor or not student:
+                await interaction.response.send_message("Specify mentor and student UIDs.", ephemeral=True)
+                return
+            mentor_girl = pl.get_girl(mentor)
+            student_girl = pl.get_girl(student)
+            if not mentor_girl or not student_girl:
+                await interaction.response.send_message("Mentor or student not found.", ephemeral=True)
+                return
+            if mentor_girl.uid == student_girl.uid:
+                await interaction.response.send_message("Mentor and student must be different.", ephemeral=True)
+                return
+            if brothel.training_for(mentor_girl.uid) or brothel.training_for(student_girl.uid):
+                await interaction.response.send_message("One of the girls is already in training.", ephemeral=True)
+                return
+
+            def total_skill(girl: Any) -> int:
+                main = sum(int(v.get("level", 0)) for v in girl.skills.values())
+                sub = sum(int(v.get("level", 0)) for v in girl.subskills.values())
+                return main + sub
+
+            if mentor_girl.level <= student_girl.level and total_skill(mentor_girl) <= total_skill(student_girl):
+                await interaction.response.send_message(
+                    "Mentor must be more experienced than the student.", ephemeral=True
+                )
+                return
+
+            assignment = brothel.start_training(mentor_girl.uid, student_girl.uid)
+            if not assignment:
+                await interaction.response.send_message("Unable to start training.", ephemeral=True)
+                return
+            save_player(pl)
+            await interaction.response.send_message(
+                f"📘 **{mentor_girl.name}** is now mentoring **{student_girl.name}**.",
+                ephemeral=True,
+            )
+            return
+
+        if action_val == "finish":
+            target_uid = student or mentor
+            if not target_uid:
+                await interaction.response.send_message("Specify mentor or student UID to finish training.", ephemeral=True)
+                return
+            assignment = brothel.training_for(target_uid)
+            if not assignment:
+                await interaction.response.send_message("No mentorship found for that UID.", ephemeral=True)
+                return
+            mentor_girl = pl.get_girl(assignment.mentor_uid)
+            student_girl = pl.get_girl(assignment.student_uid)
+            if not mentor_girl or not student_girl:
+                await interaction.response.send_message("Girls not found.", ephemeral=True)
+                brothel.stop_training(assignment.mentor_uid)
+                save_player(pl)
+                return
+            brothel.stop_training(assignment.mentor_uid)
+            duration_hours = max(0.1, (time.time() - assignment.since_ts) / 3600)
+            level_gap = max(0, mentor_girl.level - student_girl.level)
+            skill_gap = sum(int(v.get("level", 0)) for v in mentor_girl.skills.values()) - sum(
+                int(v.get("level", 0)) for v in student_girl.skills.values()
+            )
+            skill_gap += sum(int(v.get("level", 0)) for v in mentor_girl.subskills.values()) - sum(
+                int(v.get("level", 0)) for v in student_girl.subskills.values()
+            )
+            skill_gap = max(0, skill_gap)
+            bonus = 0.12 * min(6, duration_hours)
+            bonus += level_gap * 0.04
+            bonus += skill_gap * 0.002
+            bonus += max(0, mentor_girl.vitality_level - student_girl.vitality_level) * 0.01
+            bonus = min(0.6, bonus)
+            student_girl.grant_training_bonus(mentor_girl.uid, bonus)
+            save_player(pl)
+            await interaction.response.send_message(
+                f"📘 Training finished. **{student_girl.name}** gains +{int(bonus * 100)}% XP on next job.",
+                ephemeral=True,
+            )
+            return
+
     @app_commands.command(name="girls", description="List your girls")
     async def girls(self, interaction: discord.Interaction):
         pl = load_player(interaction.user.id)
@@ -346,11 +503,13 @@ class Core(commands.Cog):
             await interaction.response.send_message("You have no girls. Use /start or /gacha.", ephemeral=True)
             return
 
+        brothel = pl.ensure_brothel()
+
         pages: list[discord.Embed] = []
         files: list[str | None] = []
 
         for girl in pl.girls:
-            embed, image_path = build_girl_embed(girl)
+            embed, image_path = build_girl_embed(girl, brothel)
             if image_path and os.path.exists(image_path):
                 files.append(image_path)
             else:
@@ -360,6 +519,57 @@ class Core(commands.Cog):
         save_player(pl)
         view = Paginator(pages, interaction.user.id, timeout=120, files=files)
         await view.send(interaction)
+
+    @app_commands.command(name="top", description="Show leaderboards for brothels or girls")
+    @app_commands.choices(
+        category=[
+            app_commands.Choice(name="Brothels", value="brothel"),
+            app_commands.Choice(name="Girls", value="girls"),
+        ]
+    )
+    async def top(
+        self,
+        interaction: discord.Interaction,
+        category: app_commands.Choice[str] | None = None,
+    ):
+        cat = (choice_value(category) or "brothel").lower()
+        if cat not in {"brothel", "girls"}:
+            cat = "brothel"
+
+        if cat == "brothel":
+            entries = brothel_leaderboard(10)
+            embed = discord.Embed(title="Top Brothels", color=0xF59E0B)
+            if not entries:
+                embed.description = "No data yet."
+            for idx, (score, player) in enumerate(entries, start=1):
+                user = interaction.client.get_user(player.user_id) or interaction.guild and interaction.guild.get_member(player.user_id)
+                mention = f"<@{player.user_id}>" if user is None else user.mention
+                brothel = player.ensure_brothel()
+                embed.add_field(
+                    name=f"{idx}. {mention}",
+                    value=(
+                        f"Score {score} • Rooms {brothel.rooms} • "
+                        f"Renown {player.renown}"
+                    ),
+                    inline=False,
+                )
+        else:
+            entries = girl_leaderboard(10)
+            embed = discord.Embed(title="Top Girls", color=0x8B5CF6)
+            if not entries:
+                embed.description = "No girls ranked yet."
+            for idx, (score, player, girl) in enumerate(entries, start=1):
+                user = interaction.client.get_user(player.user_id) or interaction.guild and interaction.guild.get_member(player.user_id)
+                owner = f"<@{player.user_id}>" if user is None else user.mention
+                embed.add_field(
+                    name=f"{idx}. {girl.name} [{girl.rarity}]",
+                    value=(
+                        f"Owner {owner} • Lv{girl.level} • Score {score}"
+                    ),
+                    inline=False,
+                )
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="market", description="Browse the market and send a girl to work")
     @app_commands.describe(level="Optional market level override")
@@ -374,10 +584,10 @@ class Core(commands.Cog):
         brothel.apply_decay()
         for g in pl.girls:
             g.normalize_skill_structs()
-            g.apply_regen()
+            g.apply_regen(brothel)
         save_player(pl)
 
-        max_lvl = market_level_from_rep(pl.reputation)
+        max_lvl = market_level_from_rep(pl.renown)
         if level is not None:
             if not (0 <= level <= max_lvl):
                 await interaction.response.send_message(
@@ -411,8 +621,9 @@ class Core(commands.Cog):
             await interaction.response.send_message("Girl not found.", ephemeral=True)
             return
 
+        brothel = pl.ensure_brothel()
         girl.normalize_skill_structs()
-        girl.apply_regen()
+        girl.apply_regen(brothel)
 
         missing = girl.health_max - girl.health
         if missing <= 0:

@@ -16,6 +16,7 @@ from ..models import (
     get_level,
     get_xp,
     make_bar,
+    now_ts,
     skill_xp_threshold,
     stat_xp_threshold,
 )
@@ -48,21 +49,20 @@ from .constants import (
 from .utils import lust_state_icon, lust_state_label, preference_icon
 
 
-def brothel_overview_lines(brothel: BrothelState) -> Tuple[str, str]:
+def brothel_overview_lines(brothel: BrothelState, girls_total: Optional[int] = None) -> Tuple[str, str]:
     """Return summary and reserves lines for a brothel."""
 
+    occupancy = f"{girls_total}/{brothel.rooms}" if girls_total is not None else str(brothel.rooms)
     summary = (
-        f"{EMOJI_ROOMS} Rooms {brothel.rooms} • "
-        f"{EMOJI_CLEAN} Clean {brothel.cleanliness}/100 • "
-        f"{EMOJI_MORALE} Morale {brothel.morale}/100 • "
-        f"{EMOJI_POPULARITY} Pop {brothel.popularity}"
+        f"{EMOJI_ROOMS} {occupancy} • "
+        f"{EMOJI_CLEAN} {brothel.cleanliness}/100 • "
+        f"{EMOJI_MORALE} {brothel.morale}/100"
     )
-    facility_short = " | ".join(
-        f"{FACILITY_INFO[key][0]} L{brothel.facility_level(key)}"
-        for key in ("comfort", "hygiene", "security", "allure")
+    reserves = (
+        f"{EMOJI_POPULARITY} Renown {brothel.renown} • "
+        f"{EMOJI_COIN} Reserve {brothel.upkeep_pool}"
     )
-    reserve = f"{EMOJI_COIN} Reserve {brothel.upkeep_pool}"
-    return summary, f"{reserve} • {facility_short}"
+    return summary, reserves
 
 
 def brothel_facility_lines(brothel: BrothelState) -> list[str]:
@@ -85,7 +85,7 @@ def build_brothel_embed(
     """Compose a brothel overview embed for the given player."""
 
     brothel = player.ensure_brothel()
-    overview, reserves = brothel_overview_lines(brothel)
+    overview, reserves = brothel_overview_lines(brothel, len(player.girls))
     description_parts: list[str] = []
     if notes:
         description_parts.extend(notes)
@@ -102,10 +102,33 @@ def build_brothel_embed(
         value="\n".join(brothel_facility_lines(brothel)),
         inline=False,
     )
+
+    training_lines = format_training_lines(brothel, player.girls)
+    if training_lines:
+        embed.add_field(name="Mentorship", value="\n".join(training_lines), inline=False)
+
+    embed.add_field(
+        name="Rooms",
+        value=f"Expand: {EMOJI_COIN} {brothel.next_room_cost()} (progress {brothel.room_progress})",
+        inline=False,
+    )
     embed.set_footer(
-        text=f"{EMOJI_COIN} Wallet {player.currency} • ⭐ Rep {player.reputation}"
+        text=f"{EMOJI_COIN} Wallet {player.currency} • ⭐ Renown {player.renown}"
     )
     return embed
+
+
+def format_training_lines(brothel: BrothelState, girls: Iterable[Girl]) -> list[str]:
+    lookup = {g.uid: g for g in girls}
+    lines: list[str] = []
+    for assignment in brothel.training:
+        mentor = lookup.get(assignment.mentor_uid)
+        student = lookup.get(assignment.student_uid)
+        if not mentor or not student:
+            continue
+        minutes = max(1, (now_ts() - assignment.since_ts) // 60)
+        lines.append(f"📘 {mentor.name} → {student.name} ({minutes}m)")
+    return lines
 
 
 def _stat_progress_line(label: str, level: int, xp: int, length: int = 10) -> str:
@@ -137,7 +160,7 @@ def _format_skill_lines(
     return lines
 
 
-def _profile_lines(girl: Girl) -> list[str]:
+def _profile_lines(girl: Girl, brothel: Optional[BrothelState] = None) -> list[str]:
     entries: list[str] = []
     if girl.body_shape:
         entries.append(f"{EMOJI_BODY} Shape: {girl.body_shape}")
@@ -160,12 +183,16 @@ def _profile_lines(girl: Girl) -> list[str]:
         entries.append(f"🤰 Pregnant {pts}/{girl.pregnancy_total_points()} {bar}")
     else:
         entries.append("👶 Not pregnant")
+    if brothel and brothel.training_for(girl.uid):
+        entries.append("📘 In mentorship")
+    if girl.mentorship_bonus > 0:
+        entries.append(f"📈 Mentor boost +{int(girl.mentorship_bonus * 100)}%")
     if not entries:
         entries.append("❌ —")
     return entries
 
 
-def build_girl_embed(girl: Girl) -> Tuple[discord.Embed, Optional[str]]:
+def build_girl_embed(girl: Girl, brothel: Optional[BrothelState] = None) -> Tuple[discord.Embed, Optional[str]]:
     """Render a girl's profile embed and optional local image path."""
 
     embed = discord.Embed(
@@ -180,7 +207,7 @@ def build_girl_embed(girl: Girl) -> Tuple[discord.Embed, Optional[str]]:
         embed.set_image(url=girl.image_url)
 
     girl.normalize_skill_structs()
-    girl.apply_regen()
+    girl.apply_regen(brothel)
 
     vit_line = _stat_progress_line(
         f"{EMOJI_STAT_VIT} Vitality", girl.vitality_level, girl.vitality_xp
@@ -212,7 +239,7 @@ def build_girl_embed(girl: Girl) -> Tuple[discord.Embed, Optional[str]]:
     ]
     left_lines = [f"__{EMOJI_CONDITION} Condition__", *condition_lines]
 
-    profile_lines = _profile_lines(girl)
+    profile_lines = _profile_lines(girl, brothel)
     if profile_lines:
         left_lines.extend([EMBED_SPACER, f"__{EMOJI_PROFILE} Profile__", *profile_lines])
 
