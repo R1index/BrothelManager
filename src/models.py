@@ -8,7 +8,7 @@ import time
 # -----------------------------------------------------------------------------
 
 MAIN_SKILLS = ["Human", "Insect", "Beast", "Monster"]
-SUB_SKILLS  = ["VAGINAL", "ANAL", "ORAL", "BREAST"]  # NIPPLE -> BREAST
+SUB_SKILLS  = ["VAGINAL", "ANAL", "ORAL", "BREAST", "HAND", "FOOT", "TOY"]  # NIPPLE -> BREAST
 
 RARITY_WEIGHTS = {"R": 70, "SR": 20, "SSR": 9, "UR": 1}
 RARITY_COLORS  = {"R": 0x9fa6b2, "SR": 0x60a5fa, "SSR": 0xf59e0b, "UR": 0x8b5cf6}

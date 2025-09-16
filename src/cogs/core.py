@@ -9,7 +9,8 @@ from ..storage import (
     resolve_job, dismantle_girl
 )
 from ..models import (
-    RARITY_COLORS, make_bar, skill_xp_threshold, get_level, get_xp, market_level_from_rep
+    RARITY_COLORS, make_bar, skill_xp_threshold, get_level, get_xp, market_level_from_rep,
+    MAIN_SKILLS, SUB_SKILLS,
 )
 from ..assets_util import profile_image_path, action_image_path, pregnant_profile_image_path
 
@@ -303,12 +304,12 @@ class Core(commands.Cog):
 
             em.add_field(
                 name="Skills",
-                value=fmt_skill_lines(g.skills, ['Human', 'Insect', 'Beast', 'Monster'], g.prefs_skills),
+                value=fmt_skill_lines(g.skills, MAIN_SKILLS, g.prefs_skills),
                 inline=False
             )
             em.add_field(
                 name="Sub",
-                value=fmt_skill_lines(g.subskills, ['VAGINAL', 'ANAL', 'ORAL', 'BREAST'], g.prefs_subskills),
+                value=fmt_skill_lines(g.subskills, SUB_SKILLS, g.prefs_subskills),
                 inline=False
             )
 
