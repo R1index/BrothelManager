@@ -118,11 +118,78 @@ class GameService:
     # ------------------------------------------------------------------
     # Catalog / gacha
     # ------------------------------------------------------------------
-    def _alloc_girl_uid(self, base_id: str, uid: int, counter: int) -> str:
-        return f"{base_id}#{counter}"
+    def _normalize_base_id(self, value: str | int | None) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value.strip()
+        return str(value).strip()
 
-    def _make_girl_from_catalog_entry(self, base: dict, counter: int) -> Girl:
-        base_id = base["id"]
+    def _split_uid_counter(self, uid: str | None) -> tuple[str, int | None]:
+        if not isinstance(uid, str):
+            return "", None
+        value = uid.strip()
+        if not value:
+            return "", None
+        prefix, sep, suffix = value.partition("#")
+        prefix = prefix.strip()
+        if not sep:
+            return prefix, None
+        suffix = suffix.strip()
+        if not suffix:
+            return prefix, None
+        try:
+            counter = int(suffix)
+        except ValueError:
+            return prefix, None
+        if counter <= 0:
+            return prefix, None
+        return prefix, counter
+
+    def _alloc_girl_uid(self, base_id: str | int, girls: Iterable[Girl] | None = None) -> str:
+        normalized_base = self._normalize_base_id(base_id)
+        used: set[int] = set()
+        if girls is None:
+            girls_iter: Iterable[Girl | dict] = ()
+        else:
+            girls_iter = girls
+        for existing in girls_iter:
+            if isinstance(existing, Girl):
+                existing_uid = existing.uid
+                existing_base = existing.base_id
+            elif isinstance(existing, dict):
+                existing_uid = existing.get("uid")
+                existing_base = existing.get("base_id")
+            else:
+                continue
+
+            prefix, counter = self._split_uid_counter(existing_uid)
+            existing_base_norm = self._normalize_base_id(existing_base)
+
+            matches_base = False
+            if normalized_base:
+                if prefix == normalized_base or existing_base_norm == normalized_base:
+                    matches_base = True
+            else:
+                if prefix == "" or existing_base_norm == "":
+                    matches_base = True
+            if not matches_base:
+                continue
+
+            if counter is not None:
+                used.add(counter)
+            elif isinstance(existing_uid, str) and existing_uid.strip() == normalized_base:
+                used.add(1)
+
+        counter = 1
+        while counter in used:
+            counter += 1
+        if normalized_base:
+            return f"{normalized_base}#{counter}"
+        return f"#{counter}"
+
+    def _make_girl_from_catalog_entry(self, base: dict, uid: str) -> Girl:
+        base_id = self._normalize_base_id(base["id"])
         name = base["name"]
         rarity = base["rarity"]
         image_url = base.get("image_url", "")
@@ -135,7 +202,7 @@ class GameService:
         prefs = base.get("prefs", {}) or {}
 
         girl = Girl(
-            uid=self._alloc_girl_uid(base_id, 0, counter),
+            uid=str(uid),
             base_id=base_id,
             name=name,
             rarity=rarity,
@@ -176,8 +243,9 @@ class GameService:
         player = Player(user_id=uid, currency=500, girls=[])
         brothel = player.ensure_brothel()
         player.renown = brothel.renown
-        girl = self._make_girl_from_catalog_entry(base_entry, counter=1)
-        girl.uid = self._alloc_girl_uid(girl.base_id, uid, 1)
+
+        girl_uid = self._alloc_girl_uid(base_entry["id"], player.girls)
+        girl = self._make_girl_from_catalog_entry(base_entry, uid=girl_uid)
         player.girls.append(girl)
 
         self.save_player(player)
@@ -210,11 +278,10 @@ class GameService:
             return entries[choice]
 
         added: List[Girl] = []
-        start_index = len(player.girls) + 1
-        for offset in range(times):
+        for _ in range(times):
             base_entry = pick_entry()
-            girl = self._make_girl_from_catalog_entry(base_entry, counter=start_index + offset)
-            girl.uid = self._alloc_girl_uid(girl.base_id, uid, start_index + offset)
+            girl_uid = self._alloc_girl_uid(base_entry["id"], player.girls)
+            girl = self._make_girl_from_catalog_entry(base_entry, uid=girl_uid)
             player.girls.append(girl)
             added.append(girl)
 
