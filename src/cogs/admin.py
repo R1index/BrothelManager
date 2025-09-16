@@ -73,8 +73,15 @@ class Admin(commands.Cog):
 
     @app_commands.command(name="sync", description="Resync slash commands (owner only)")
     async def sync(self, interaction: discord.Interaction) -> None:
-        app = self.bot.application
-        if app is None or app.owner is None or interaction.user.id != app.owner.id:
+        app_info = await self.bot.application_info()
+        owner = getattr(app_info, "owner", None) if app_info else None
+
+        if owner is not None:
+            is_owner = interaction.user.id == owner.id
+        else:
+            is_owner = await self.bot.is_owner(interaction.user)
+
+        if not is_owner:
             await interaction.response.send_message(
                 "Only the bot application owner can do this.", ephemeral=True
             )
