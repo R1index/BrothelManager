@@ -83,3 +83,11 @@ def load_catalog():
 
 def iter_user_ids():
     return _SERVICE.iter_user_ids()
+
+
+def brothel_leaderboard(limit: int = 10):
+    return _SERVICE.gather_brothel_top(limit)
+
+
+def girl_leaderboard(limit: int = 10):
+    return _SERVICE.gather_girl_top(limit)

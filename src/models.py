@@ -1,6 +1,6 @@
 from __future__ import annotations
-from pydantic import BaseModel, Field
-from typing import Any, Dict, List, Optional, Tuple
+from pydantic import BaseModel, Field, ConfigDict
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 import time
 
 # -----------------------------------------------------------------------------
@@ -160,6 +160,8 @@ def xp_multiplier_for_pref(prefs: Dict[str, str], name: str) -> float:
 # -----------------------------------------------------------------------------
 
 class Girl(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     uid: str                  # unique per player (e.g. g001#1)
     base_id: str
     name: str
@@ -207,23 +209,50 @@ class Girl(BaseModel):
     prefs_skills: Dict[str, str]    = Field(default_factory=lambda: {k: PREF_OPEN for k in MAIN_SKILLS})
     prefs_subskills: Dict[str, str] = Field(default_factory=lambda: {k: PREF_OPEN for k in SUB_SKILLS})
 
-    def apply_regen(self):
+    mentorship_bonus: float = 0.0
+    mentorship_from: Optional[str] = None
+    mentorship_focus_type: Optional[str] = None
+    mentorship_focus: Optional[str] = None
+
+    def apply_regen(self, brothel: Optional["BrothelState"] = None):
         self.ensure_stat_defaults()
+        comfort_factor = 1.0
+        lust_factor = 1.0
+        health_regen = 0
+        if brothel:
+            brothel.ensure_bounds()
+            comfort_factor += max(0, brothel.facility_level("comfort") - 1) * 0.12
+            comfort_factor += max(-0.25, (brothel.morale - 70) / 220)
+            comfort_factor -= max(0.0, (65 - brothel.cleanliness) / 180)
+            comfort_factor = max(0.55, min(1.8, comfort_factor))
+
+            lust_factor += max(0, brothel.facility_level("allure") - 1) * 0.08
+            lust_factor += max(-0.2, (brothel.morale - 65) / 260)
+            lust_factor -= max(0.0, (60 - brothel.cleanliness) / 220)
+            lust_factor = max(0.5, min(1.7, lust_factor))
+
+            if brothel.facility_level("comfort") >= 3 and brothel.cleanliness >= 65:
+                health_regen += 1
+            if brothel.facility_level("security") >= 4 and brothel.morale >= 70:
+                health_regen += 1
+
         # stamina regen (endurance affects both cap and per-tick rate)
         self.stamina, self.stamina_last_ts = regen_stamina(
             self.stamina,
             self.stamina_last_ts,
             self.stamina_max,
-            per_tick=self.stamina_regen_per_tick(),
+            per_tick=self.stamina_regen_per_tick() * comfort_factor,
         )
         # lust drifts upward while resting
         self.lust, self.lust_last_ts = regen_stamina(
             self.lust,
             self.lust_last_ts,
             self.lust_max,
-            per_tick=self.lust_regen_per_tick(),
+            per_tick=self.lust_regen_per_tick() * lust_factor,
             tick_seconds=600,
         )
+        if health_regen > 0 and self.health < self.health_max:
+            self.health = min(self.health_max, self.health + health_regen)
         # pregnancy auto-progress + auto-clear at full term
         if self.pregnant and self.pregnant_since_ts:
             elapsed = max(0, now_ts() - self.pregnant_since_ts)
@@ -332,6 +361,68 @@ class Girl(BaseModel):
         self.recalc_limits()
         self.lust = min(self.lust, self.lust_max)
 
+    def _clear_training_bonus(self):
+        self.mentorship_bonus = 0.0
+        self.mentorship_from = None
+        self.mentorship_focus_type = None
+        self.mentorship_focus = None
+
+    def consume_training_bonus_for(self, focus_type: str, skill_name: Optional[str]) -> float:
+        if self.mentorship_bonus <= 0:
+            return 0.0
+
+        stored_type = (self.mentorship_focus_type or "any").lower()
+        stored_name = (self.mentorship_focus or "").lower()
+        req_type = (focus_type or "").lower()
+        req_name = (skill_name or "").lower()
+
+        if req_type == "any":
+            if stored_type != "any":
+                return 0.0
+            bonus = self.mentorship_bonus
+            self._clear_training_bonus()
+            return bonus
+
+        if stored_type == "any":
+            bonus = self.mentorship_bonus
+            self._clear_training_bonus()
+            return bonus
+
+        if stored_type != req_type:
+            return 0.0
+        if stored_name and stored_name != req_name:
+            return 0.0
+
+        bonus = self.mentorship_bonus
+        self._clear_training_bonus()
+        return bonus
+
+    def consume_training_bonus(self) -> float:
+        return self.consume_training_bonus_for("any", None)
+
+    def grant_training_bonus(
+        self,
+        source_uid: str,
+        amount: float,
+        focus_type: str,
+        focus: Optional[str],
+    ):
+        amount = max(0.0, float(amount))
+        if amount <= 0:
+            return
+
+        normalized_type = (focus_type or "any").lower()
+        if normalized_type not in {"main", "sub"}:
+            normalized_type = "any"
+
+        focus = (focus or "").strip()
+        focus_value = focus if focus else None
+
+        self.mentorship_bonus = min(1.0, amount)
+        self.mentorship_from = source_uid
+        self.mentorship_focus_type = normalized_type
+        self.mentorship_focus = focus_value
+
 class Job(BaseModel):
     # Future: multiple sub-skill demands
     demand_subs: List[Dict[str, int]] | None = None
@@ -346,6 +437,8 @@ class Job(BaseModel):
 
 
 class BrothelState(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     comfort_level: int = 1
     comfort_xp: int = 0
     hygiene_level: int = 1
@@ -357,11 +450,13 @@ class BrothelState(BaseModel):
 
     cleanliness: int = 80
     morale: int = 70
-    popularity: int = 15
+    renown: int = Field(default=15, alias="popularity", serialization_alias="popularity")
     rooms: int = 3
     upkeep_pool: int = 0
+    room_progress: int = 0
 
     last_tick_ts: int = Field(default_factory=now_ts)
+    training: List["TrainingAssignment"] = Field(default_factory=list)
 
     def ensure_bounds(self):
         for name in BROTHEL_FACILITY_NAMES:
@@ -372,11 +467,44 @@ class BrothelState(BaseModel):
 
         self.cleanliness = min(100, max(0, int(self.cleanliness)))
         self.morale = min(100, max(10, int(self.morale)))
-        self.popularity = min(250, max(0, int(self.popularity)))
+        self.renown = min(500, max(0, int(self.renown)))
         self.rooms = max(1, int(self.rooms))
         self.upkeep_pool = min(10000, max(0, int(self.upkeep_pool)))
+        self.room_progress = max(0, int(self.room_progress))
         if self.last_tick_ts <= 0:
             self.last_tick_ts = now_ts()
+        cleaned_training: list[TrainingAssignment] = []
+        seen: set[tuple[str, str]] = set()
+        for assign in list(self.training or []):
+            if not isinstance(assign, TrainingAssignment):
+                try:
+                    assign = TrainingAssignment(**assign)
+                except Exception:
+                    continue
+            key = (assign.mentor_uid, assign.student_uid)
+            if assign.mentor_uid == assign.student_uid or key in seen:
+                continue
+            focus_type = (assign.focus_type or "any").lower()
+            if focus_type not in {"main", "sub"}:
+                focus_type = "any"
+            assign.focus_type = focus_type
+            if focus_type == "main" and assign.focus:
+                normalized = next(
+                    (name for name in MAIN_SKILLS if name.lower() == str(assign.focus).lower()),
+                    str(assign.focus),
+                )
+                assign.focus = normalized
+            elif focus_type == "sub" and assign.focus:
+                normalized = next(
+                    (name for name in SUB_SKILLS if name.lower() == str(assign.focus).lower()),
+                    str(assign.focus),
+                )
+                assign.focus = normalized
+            else:
+                assign.focus = None
+            seen.add(key)
+            cleaned_training.append(assign)
+        self.training = cleaned_training
 
     def facility_threshold(self, name: str) -> int:
         return facility_xp_threshold(self.facility_level(name))
@@ -432,9 +560,9 @@ class BrothelState(BaseModel):
         self.morale = min(100, max(10, self.morale + morale_shift))
 
         if self.cleanliness < 50:
-            self.popularity = max(0, self.popularity - max(1, decay // 2))
+            self.renown = max(0, self.renown - max(1, decay // 3))
         else:
-            self.popularity = min(250, self.popularity + int(decay // 3))
+            self.renown = min(500, self.renown + int(decay // 5))
 
         remainder = elapsed % 900
         self.last_tick_ts = now - remainder
@@ -442,7 +570,7 @@ class BrothelState(BaseModel):
     def success_bonus(self) -> float:
         boost = 0.015 * max(0, self.comfort_level - 1)
         boost += max(-0.05, (self.morale - 70) / 350)
-        boost += min(0.05, self.popularity / 500)
+        boost += min(0.08, self.renown / 600)
         penalty = max(0.0, (50 - self.cleanliness) / 180)
         total = boost - penalty
         return max(-0.08, min(0.18, total))
@@ -450,7 +578,7 @@ class BrothelState(BaseModel):
     def reward_modifier(self) -> float:
         modifier = 1.0
         modifier += 0.04 * max(0, self.allure_level - 1)
-        modifier += min(0.25, self.popularity / 400)
+        modifier += min(0.3, self.renown / 450)
         modifier += (self.cleanliness - 60) / 250
         return max(0.6, min(1.6, modifier))
 
@@ -486,16 +614,16 @@ class BrothelState(BaseModel):
     def promote(self, coins: int) -> Dict[str, int]:
         coins = max(0, int(coins))
         if coins <= 0:
-            return {"popularity": 0, "morale": 0}
-        gained = min(250 - self.popularity, max(1, coins // 6))
-        morale = min(100 - self.morale, max(0, coins // 15))
-        self.popularity += gained
+            return {"renown": 0, "morale": 0}
+        gained = min(500 - self.renown, max(1, coins // 5))
+        morale = min(100 - self.morale, max(0, coins // 18))
+        self.renown += gained
         self.morale += morale
         self.gain_facility_xp("allure", max(3, coins // 4))
         self.ensure_bounds()
-        return {"popularity": gained, "morale": morale}
+        return {"renown": gained, "morale": morale}
 
-    def register_job_outcome(self, success: bool, injured: bool, job: "Job", reward: int):
+    def register_job_outcome(self, success: bool, injured: bool, job: "Job", reward: int) -> Dict[str, int]:
         reward = max(0, int(reward))
         wear = 1 + job.difficulty
         if job.demand_sub == "VAGINAL":
@@ -505,36 +633,112 @@ class BrothelState(BaseModel):
 
         if success:
             morale_gain = 2 + job.difficulty
-            pop_gain = max(1, reward // 90)
             self.morale = min(100, self.morale + morale_gain)
-            self.popularity = min(250, self.popularity + pop_gain)
-            self.gain_facility_xp("comfort", 6 + job.difficulty * 2)
-            self.gain_facility_xp("allure", max(4, reward // 35))
         else:
             morale_loss = 2 + job.difficulty
             self.morale = max(10, self.morale - morale_loss)
-            self.popularity = max(0, self.popularity - (1 + job.difficulty))
-            self.gain_facility_xp("comfort", 3 + job.difficulty)
-            self.gain_facility_xp("allure", max(2, reward // 60))
-
-        hygiene_xp = 4 + max(0, 80 - self.cleanliness) // 5
-        self.gain_facility_xp("hygiene", hygiene_xp)
 
         if injured:
             self.cleanliness = max(0, self.cleanliness - (2 + job.difficulty))
             self.morale = max(10, self.morale - 3)
-            self.popularity = max(0, self.popularity - 2)
-            self.gain_facility_xp("security", 6 + job.difficulty * 2)
-        else:
-            self.gain_facility_xp("security", 3 + job.difficulty)
 
         self.ensure_bounds()
+
+    def next_room_cost(self) -> int:
+        base = 200
+        scaling = max(0, self.rooms - 3)
+        return base + scaling * 120
+
+    def expand_rooms(self, coins: int) -> Dict[str, int]:
+        coins = max(0, int(coins))
+        if coins <= 0:
+            return {"rooms": 0, "progress": self.room_progress, "next_cost": self.next_room_cost()}
+        invested = self.room_progress + coins
+        gained = 0
+        cost = self.next_room_cost()
+        while invested >= cost:
+            invested -= cost
+            self.rooms += 1
+            gained += 1
+            cost = self.next_room_cost()
+        self.room_progress = invested
+        self.ensure_bounds()
+        return {"rooms": gained, "progress": invested, "next_cost": cost}
+
+    def sync_renown(self, player: "Player") -> None:
+        self.renown = player.renown
+
+    def prune_training(self, girls: Iterable[Girl]):
+        valid = {g.uid for g in girls}
+        self.training = [
+            assign
+            for assign in self.training
+            if assign.mentor_uid in valid and assign.student_uid in valid and assign.mentor_uid != assign.student_uid
+        ]
+
+    def training_for(self, uid: str) -> Optional["TrainingAssignment"]:
+        for assign in self.training:
+            if assign.mentor_uid == uid or assign.student_uid == uid:
+                return assign
+        return None
+
+    def stop_training(self, uid: str) -> Optional["TrainingAssignment"]:
+        assign = self.training_for(uid)
+        if not assign:
+            return None
+        self.training = [t for t in self.training if t is not assign]
+        return assign
+
+    def start_training(
+        self,
+        mentor_uid: str,
+        student_uid: str,
+        focus_type: str,
+        focus: str,
+    ) -> Optional["TrainingAssignment"]:
+        focus_type_norm = (focus_type or "").lower()
+        focus_value = (focus or "").strip()
+        if focus_type_norm == "main":
+            focus_canonical = next(
+                (name for name in MAIN_SKILLS if name.lower() == focus_value.lower()),
+                None,
+            )
+        elif focus_type_norm == "sub":
+            focus_canonical = next(
+                (name for name in SUB_SKILLS if name.lower() == focus_value.lower()),
+                None,
+            )
+        else:
+            focus_canonical = None
+
+        if not focus_canonical:
+            return None
+
+        if mentor_uid == student_uid:
+            return None
+        if self.training_for(mentor_uid) or self.training_for(student_uid):
+            return None
+        assignment = TrainingAssignment(
+            mentor_uid=mentor_uid,
+            student_uid=student_uid,
+            focus_type=focus_type_norm,
+            focus=focus_canonical,
+        )
+        self.training.append(assignment)
+        return assignment
 
 def market_level_from_rep(rep: int) -> int:
     """+1 market level per 100 reputation, starting at 0."""
     if rep < 0:
         rep = 0
     return min(9999, rep // 100)
+
+class TrainingAssignment(BaseModel):
+    mentor_uid: str
+    student_uid: str
+    focus_type: str = "any"
+    focus: Optional[str] = None
+    since_ts: int = Field(default_factory=now_ts)
 
 class Market(BaseModel):
     user_id: int
@@ -543,7 +747,9 @@ class Market(BaseModel):
     level: int = 0
 
 class Player(BaseModel):
-    reputation: int = 0
+    model_config = ConfigDict(populate_by_name=True)
+
+    renown: int = Field(default=0, alias="reputation", serialization_alias="reputation")
     user_id: int
     currency: int = 0
     girls: List[Girl] = Field(default_factory=list)
@@ -561,4 +767,13 @@ class Player(BaseModel):
             else:
                 self.brothel = BrothelState()
         self.brothel.ensure_bounds()
+        self.brothel.sync_renown(self)
         return self.brothel
+
+    @property
+    def reputation(self) -> int:
+        return self.renown
+
+    @reputation.setter
+    def reputation(self, value: int) -> None:
+        self.renown = int(value)

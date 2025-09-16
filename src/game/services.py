@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import random
 import time
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Tuple
 
 from .repository import DataStore
 from ..models import (
@@ -15,6 +15,7 @@ from ..models import (
     BrothelState,
     MAIN_SKILLS,
     SUB_SKILLS,
+    BROTHEL_FACILITY_NAMES,
     normalize_skill_map,
     normalize_prefs,
     get_level,
@@ -36,7 +37,10 @@ class GameService:
     # Player persistence
     # ------------------------------------------------------------------
     def save_player(self, player: Player) -> None:
-        self.store.write_json(self.store.user_path(player.user_id), player.model_dump(mode="json"))
+        player.ensure_brothel()
+        player.brothel.prune_training(player.girls)
+        payload = player.model_dump(mode="json", by_alias=True)
+        self.store.write_json(self.store.user_path(player.user_id), payload)
 
     def load_player(self, uid: int) -> Optional[Player]:
         raw = self.store.read_json(self.store.user_path(uid))
@@ -59,7 +63,9 @@ class GameService:
             girl["prefs_subskills"] = normalize_prefs(girl.get("prefs_subskills", {}), SUB_SKILLS)
 
         player = Player(**raw)
-        player.ensure_brothel()
+        brothel = player.ensure_brothel()
+        player.renown = brothel.renown
+        brothel.prune_training(player.girls)
         for g in player.girls:
             g.normalize_skill_structs()
             g.ensure_stat_defaults()
@@ -122,7 +128,8 @@ class GameService:
         base_entry = entries[index]
 
         player = Player(user_id=uid, currency=500, girls=[])
-        player.ensure_brothel()
+        brothel = player.ensure_brothel()
+        player.renown = brothel.renown
         girl = self._make_girl_from_catalog_entry(base_entry, counter=1)
         girl.uid = self._alloc_girl_uid(girl.base_id, uid, 1)
         player.girls.append(girl)
@@ -134,6 +141,14 @@ class GameService:
         player = self.load_player(uid)
         if not player:
             raise RuntimeError("Player not found.")
+
+        brothel = player.ensure_brothel()
+        brothel.prune_training(player.girls)
+        slots_left = max(0, brothel.rooms - len(player.girls))
+        if slots_left <= 0:
+            raise RuntimeError("All rooms are currently occupied.")
+        if times > slots_left:
+            raise RuntimeError(f"Not enough free rooms ({slots_left} available).")
 
         catalog = self.store.load_catalog()
         entries = catalog.get("girls", [])
@@ -205,14 +220,20 @@ class GameService:
     def generate_market(self, uid: int, jobs_count: int = 5, forced_level: int | None = None) -> Market:
         player = self.load_player(uid)
         brothel = player.ensure_brothel() if player else None
-        level = forced_level if forced_level is not None else market_level_from_rep(player.reputation if player else 0)
+        renown = player.renown if player else 0
+        level = forced_level if forced_level is not None else market_level_from_rep(renown)
 
-        base_jobs = jobs_count
+        facility_influence = 0
         if brothel:
-            dynamic_jobs = 2 + level + brothel.rooms
-            dynamic_jobs += max(0, brothel.popularity // 40)
-            base_jobs = max(base_jobs, dynamic_jobs)
-        jobs_total = int(max(3, min(8, base_jobs)))
+            facility_influence = (
+                brothel.facility_level("allure")
+                + brothel.facility_level("comfort")
+                + brothel.facility_level("security") // 2
+            )
+        base_jobs = 3 + level + max(0, brothel.rooms - 2 if brothel else 0)
+        base_jobs += facility_influence // 2
+        base_jobs += renown // 120
+        jobs_total = int(max(3, min(10, base_jobs)))
 
         jobs: List[Job] = []
         for idx in range(jobs_total):
@@ -220,11 +241,15 @@ class GameService:
             demand_level = random.randint(0, max(1, level + 1))
             demand_sub = random.choice(SUB_SKILLS)
             demand_sub_level = random.randint(0, max(1, level + 1))
-            pay = 50 + demand_level * 20 + demand_sub_level * 15 + level * 10
+            pay = 60 + demand_level * 22 + demand_sub_level * 18 + level * 12
+            difficulty = random.randint(1, 3 + level // 3)
             if brothel:
-                pay += brothel.allure_level * 12
-                pay += brothel.popularity // 5
-                pay += max(-20, int((brothel.cleanliness - 70) * 0.8))
+                pay += brothel.allure_level * 18
+                pay += brothel.facility_level("comfort") * 10
+                pay += brothel.facility_level("security") * 6
+                pay += max(-30, int((brothel.cleanliness - 65) * 0.9))
+                pay += brothel.renown // 4
+                difficulty = min(5, difficulty + brothel.facility_level("allure") // 3)
             jobs.append(
                 Job(
                     job_id=f"J{idx + 1}",
@@ -233,7 +258,7 @@ class GameService:
                     demand_sub=demand_sub,
                     demand_sub_level=demand_sub_level,
                     pay=pay,
-                    difficulty=random.randint(1, 3),
+                    difficulty=max(1, difficulty),
                 )
             )
         return Market(user_id=uid, jobs=jobs, level=level)
@@ -263,6 +288,8 @@ class GameService:
         girl.ensure_stat_defaults()
         if brothel:
             brothel.ensure_bounds()
+
+        training_blocked = bool(brothel.training_for(girl.uid)) if brothel else False
 
         main_lvl = get_level(girl.skills, job.demand_main)
         sub_name = getattr(job, "demand_sub", None)
@@ -348,6 +375,7 @@ class GameService:
         can_attempt = (
             not blocked_main
             and not blocked_sub
+            and not training_blocked
             and meets_main
             and meets_sub
             and health_ok
@@ -360,6 +388,7 @@ class GameService:
             "sub_lvl": sub_lvl,
             "blocked_main": blocked_main,
             "blocked_sub": blocked_sub,
+            "training_blocked": training_blocked,
             "meets_main": meets_main,
             "meets_sub": meets_sub,
             "health_ok": health_ok,
@@ -377,17 +406,26 @@ class GameService:
             "injury_range": (injury_min, injury_max),
             "base_reward": base_reward,
             "expected_reward": base_reward * success_chance * (reward_multiplier if can_attempt else 0),
+            "mentorship_bonus": girl.mentorship_bonus,
+            "mentorship_focus_type": girl.mentorship_focus_type,
+            "mentorship_focus": girl.mentorship_focus,
         }
 
     def resolve_job(self, player: Player, job: Job, girl: Girl) -> dict:
-        girl.apply_regen()
         brothel = player.ensure_brothel()
+        girl.apply_regen(brothel)
         brothel.apply_decay()
 
         if girl.pregnant:
             return {"ok": False, "reason": "Girl is pregnant", "reward": 0}
 
+        if brothel.training_for(girl.uid):
+            return {"ok": False, "reason": "Girl is currently in mentorship training", "reward": 0}
+
         info = self.evaluate_job(girl, job, brothel)
+
+        if info.get("training_blocked"):
+            return {"ok": False, "reason": "Girl is currently in mentorship training", "reward": 0}
 
         stamina_cost = info["stamina_cost"]
         if girl.health <= 0:
@@ -426,26 +464,58 @@ class GameService:
 
         lust_before = girl.lust
 
-        success_roll = random.random()
-        success = success_roll < info["success_chance"]
+        success = random.random() < info["success_chance"]
         reward_multiplier = info["reward_multiplier"] if success else 0.0
         reward = int(base_reward * reward_multiplier)
 
         clean_before = brothel.cleanliness
         morale_before = brothel.morale
-        pop_before = brothel.popularity
+        renown_before = player.renown
         pool_before = brothel.upkeep_pool
-        facility_levels_before = {
-            key: brothel.facility_level(key)
-            for key in ("comfort", "hygiene", "security", "allure")
-        }
+
+        training_bonus_used = 0.0
+        training_focus_type: Optional[str] = None
+        training_focus: Optional[str] = None
+
+        stored_focus_type = (girl.mentorship_focus_type or "any").lower()
+
+        main_bonus = girl.consume_training_bonus_for("main", job.demand_main)
+        if main_bonus > 0:
+            training_bonus_used = max(training_bonus_used, main_bonus)
+            if stored_focus_type == "any":
+                training_focus_type = "any"
+                training_focus = None
+            else:
+                training_focus_type = "main"
+                training_focus = job.demand_main
+
+        sub_bonus = 0.0
+        if sub_name:
+            sub_bonus = girl.consume_training_bonus_for("sub", sub_name)
+            if sub_bonus > training_bonus_used:
+                training_bonus_used = sub_bonus
+                if stored_focus_type == "any":
+                    training_focus_type = "any"
+                    training_focus = None
+                else:
+                    training_focus_type = "sub"
+                    training_focus = sub_name
+
+        legacy_bonus = girl.consume_training_bonus_for("any", None)
+        if legacy_bonus > training_bonus_used:
+            training_bonus_used = legacy_bonus
+            if training_focus_type is None:
+                training_focus_type = "any"
+                training_focus = None
+
+        xp_multiplier = 1.0 + training_bonus_used
 
         base_xp_gain = 8 + job.difficulty * 5
         if success:
             base_xp_gain += max(0, info["main_lvl"] - job.demand_level) * 2
         else:
             base_xp_gain = max(4, base_xp_gain // 2)
-        girl.exp += base_xp_gain
+        girl.exp += int(base_xp_gain * xp_multiplier)
         while girl.level < 9999 and girl.exp >= level_xp_threshold(girl.level):
             girl.exp -= level_xp_threshold(girl.level)
             girl.level += 1
@@ -461,18 +531,25 @@ class GameService:
 
         main_mul = pref_multiplier(girl.prefs_skills, job.demand_main)
         base_main_xp = 6 + job.difficulty * 2 + max(0, info["main_lvl"] - job.demand_level) * 3
-        main_xp = int(base_main_xp * main_mul * (1.0 if success else 0.4))
+        main_xp = int(base_main_xp * main_mul * (1.0 if success else 0.4) * xp_multiplier)
         add_skill_xp(girl.skills, job.demand_main, main_xp)
 
         if sub_name:
             sub_mul = pref_multiplier(girl.prefs_subskills, sub_name)
             base_sub_xp = 4 + job.difficulty * 2 + max(0, sub_lvl - sub_need) * 3
-            sub_xp = int(base_sub_xp * sub_mul * (1.0 if success else 0.4))
+            sub_xp = int(base_sub_xp * sub_mul * (1.0 if success else 0.4) * xp_multiplier)
             add_skill_xp(girl.subskills, sub_name, sub_xp)
 
         if reward > 0:
             player.currency += reward
-            player.reputation += 5 + job.difficulty * 2
+
+        renown_delta = 0
+        if success:
+            renown_delta += 6 + job.difficulty * 2
+        else:
+            renown_delta -= max(1, 2 + job.difficulty)
+        player.renown = max(0, min(500, player.renown + renown_delta))
+        brothel.renown = player.renown
 
         if sub_name == "VAGINAL" and not girl.pregnant:
             if success and random.random() < 0.03:
@@ -492,7 +569,7 @@ class GameService:
 
         lust_cost = info["lust_cost"]
         if success:
-            lust_spent = min(lust_before, max(1, int(lust_cost * 1.0)))
+            lust_spent = min(lust_before, max(1, int(lust_cost)))
         else:
             lust_spent = min(lust_before, max(1, lust_cost // 2))
         girl.lust = max(0, girl.lust - lust_spent)
@@ -504,25 +581,21 @@ class GameService:
             lust_xp_gain += 2
         if injured:
             lust_xp_gain = max(2, lust_xp_gain - 1)
-        girl.gain_lust_xp(lust_xp_gain)
+        girl.gain_lust_xp(int(lust_xp_gain * xp_multiplier))
 
         endurance_xp_gain = max(1, int(stamina_cost * (1.1 if success else 0.7)) + job.difficulty * (3 if success else 2))
-        girl.gain_endurance_xp(endurance_xp_gain)
+        girl.gain_endurance_xp(int(endurance_xp_gain * xp_multiplier))
         vitality_xp_gain = 2 + job.difficulty * (3 if success else 2)
         if injured:
             vitality_xp_gain += max(1, injury_amount // 4)
-        girl.gain_vitality_xp(vitality_xp_gain)
+        girl.gain_vitality_xp(int(vitality_xp_gain * xp_multiplier))
 
         brothel.register_job_outcome(success, injured, job, reward)
-        brothel_deltas = {
+        brothel_diff = {
             "cleanliness": brothel.cleanliness - clean_before,
             "morale": brothel.morale - morale_before,
-            "popularity": brothel.popularity - pop_before,
+            "renown": player.renown - renown_before,
             "upkeep": brothel.upkeep_pool - pool_before,
-        }
-        brothel_levels = {
-            key: brothel.facility_level(key) - facility_levels_before[key]
-            for key in facility_levels_before
         }
 
         return {
@@ -541,8 +614,11 @@ class GameService:
             "lust_after": girl.lust,
             "lust_after_ratio": girl.lust / girl.lust_max if girl.lust_max else 0.0,
             "lust_ratio_before": info["lust_ratio"],
-            "brothel_diff": brothel_deltas,
-            "brothel_levels": brothel_levels,
+            "brothel_diff": brothel_diff,
+            "training_bonus_used": training_bonus_used,
+            "training_bonus_focus_type": training_focus_type,
+            "training_bonus_focus": training_focus,
+            "renown_delta": player.renown - renown_before,
         }
 
     # ------------------------------------------------------------------
@@ -556,11 +632,15 @@ class GameService:
         base_reward = {"R": 50, "SR": 150, "SSR": 400, "UR": 1000}
         reward = base_reward.get(girl.rarity, 50) + girl.level * 20
 
+        brothel = player.ensure_brothel()
+        brothel.stop_training(girl_uid)
+
         player.currency += reward
         player.girls = [g for g in player.girls if g.uid != girl_uid]
 
-        rep_gain_by_rarity = {"R": 1, "SR": 2, "SSR": 4, "UR": 6}
-        player.reputation += rep_gain_by_rarity.get(girl.rarity, 1)
+        renown_gain_by_rarity = {"R": 1, "SR": 2, "SSR": 4, "UR": 6}
+        player.renown = max(0, min(500, player.renown + renown_gain_by_rarity.get(girl.rarity, 1)))
+        brothel.renown = player.renown
 
         return {
             "ok": True,
@@ -569,6 +649,45 @@ class GameService:
             "name": girl.name,
             "rarity": girl.rarity,
         }
+
+    def _brothel_score(self, player: Player) -> int:
+        brothel = player.ensure_brothel()
+        facility_score = sum(
+            max(0, brothel.facility_level(name) - 1) for name in BROTHEL_FACILITY_NAMES
+        )
+        room_score = max(0, brothel.rooms - 1) * 20
+        renown_score = player.renown
+        upkeep_bonus = brothel.cleanliness // 5 + brothel.morale // 5
+        return facility_score * 25 + room_score + renown_score + upkeep_bonus
+
+    def _girl_score(self, girl: Girl) -> int:
+        main_total = sum(get_level(girl.skills, name) for name in MAIN_SKILLS)
+        sub_total = sum(get_level(girl.subskills, name) for name in SUB_SKILLS)
+        stat_total = girl.vitality_level + girl.endurance_level + girl.lust_level
+        return girl.level * 30 + main_total * 8 + sub_total * 5 + stat_total * 6
+
+    def gather_brothel_top(self, limit: int = 10) -> List[Tuple[int, Player]]:
+        entries: List[Tuple[int, Player]] = []
+        for uid in self.iter_user_ids():
+            player = self.load_player(uid)
+            if not player:
+                continue
+            score = self._brothel_score(player)
+            entries.append((score, player))
+        entries.sort(key=lambda item: item[0], reverse=True)
+        return entries[:limit]
+
+    def gather_girl_top(self, limit: int = 10) -> List[Tuple[int, Player, Girl]]:
+        entries: List[Tuple[int, Player, Girl]] = []
+        for uid in self.iter_user_ids():
+            player = self.load_player(uid)
+            if not player:
+                continue
+            for girl in player.girls:
+                score = self._girl_score(girl)
+                entries.append((score, player, girl))
+        entries.sort(key=lambda item: item[0], reverse=True)
+        return entries[:limit]
 
     def iter_user_ids(self) -> Iterable[int]:
         return self.store.iter_user_ids()
