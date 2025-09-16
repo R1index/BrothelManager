@@ -255,30 +255,32 @@ class MarketWorkView(discord.ui.View):
         start = self.girl_page * page_size
         end = start + page_size
         for g in player.girls[start:end]:
-            label = f"{g.name} ({g.uid})"
+            option_label = f"{g.name} ({g.uid})"
             lust_ratio = g.lust / g.lust_max if g.lust_max else 0.0
             mood = lust_state_label(lust_ratio)
             mood_icon = lust_state_icon(lust_ratio)
-            desc = (
+            stats_desc = (
                 f"{mood_icon} {EMOJI_HEART} {g.health}/{g.health_max} • "
                 f"{EMOJI_ENERGY} {g.stamina}/{g.stamina_max} • "
                 f"{EMOJI_LUST} {g.lust}/{g.lust_max} [{mood}]"
             )
             emoji = EMOJI_GIRL
             if brothel and brothel.training_for(g.uid):
-                desc = f"📘 Training • {desc}"
+                desc = f"📘 Training • {option_label} • {stats_desc}"
                 emoji = "📘"
             elif g.mentorship_bonus > 0:
-                icon, label = self._training_focus_display(
+                focus_icon, focus_label = self._training_focus_display(
                     g.mentorship_focus_type, g.mentorship_focus
                 )
-                desc = (
-                    f"📈 {icon} {label} +{int(g.mentorship_bonus * 100)}% • "
-                    f"{desc}"
+                mentorship_text = (
+                    f"📈 {focus_icon} {focus_label} +{int(g.mentorship_bonus * 100)}%"
                 )
+                desc = " • ".join([option_label, mentorship_text, stats_desc])
+            else:
+                desc = " • ".join([option_label, stats_desc])
             options.append(
                 discord.SelectOption(
-                    label=label[:100],
+                    label=option_label[:100],
                     value=g.uid,
                     description=desc[:100],
                     default=g.uid == self.selected_girl_uid,
