@@ -1,5 +1,7 @@
 import os
 import time
+from typing import Any
+
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
@@ -204,6 +206,15 @@ def brothel_facility_lines(brothel) -> list[str]:
         bar = make_bar(xp, need, length=8)
         lines.append(f"{icon} {label} L{lvl} [{bar}] {xp}/{need}")
     return lines
+
+
+def _choice_value(option: Any, default: str | None = None) -> str | None:
+    """Return the underlying value for an app command choice or fallback."""
+    if isinstance(option, app_commands.Choice):
+        return str(option.value)
+    if option is None:
+        return default
+    return str(option)
 
 
 class MarketWorkView(discord.ui.View):
@@ -801,10 +812,15 @@ class Core(commands.Cog):
         brothel = pl.ensure_brothel()
         brothel.apply_decay()
 
-        action_val = (action.value if action else "view").lower()
+        action_val = (_choice_value(action, default="view") or "view").lower()
         if action_val not in {"view", "upgrade", "maintain", "promote"}:
             action_val = "view"
-        facility_val = facility.value if facility else None
+
+        facility_val = _choice_value(facility)
+        if facility_val:
+            facility_val = facility_val.lower()
+            if facility_val not in FACILITY_INFO:
+                facility_val = None
         invest = max(0, coins or 0)
 
         if action_val == "view":
