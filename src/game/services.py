@@ -240,7 +240,18 @@ class GameService:
             index = random.choices(range(len(entries)), weights=weights, k=1)[0]
             base_entry = entries[index]
 
-        player = Player(user_id=uid, currency=500, girls=[])
+        config = self._load_config()
+        gacha_cfg = config.get("gacha") if isinstance(config, dict) else None
+        raw_starter_coins = (gacha_cfg or {}).get("starter_coins", 500)
+        try:
+            starter_coins = int(raw_starter_coins)
+        except (TypeError, ValueError):
+            starter_coins = 500
+        else:
+            if starter_coins < 0:
+                starter_coins = 0
+
+        player = Player(user_id=uid, currency=starter_coins, girls=[])
         brothel = player.ensure_brothel()
         player.renown = brothel.renown
 
