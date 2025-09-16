@@ -441,9 +441,10 @@ class MarketWorkView(discord.ui.View):
     class GirlSelect(discord.ui.Select):
         def __init__(self, outer: "MarketWorkView", player):
             self.outer = outer
+            brothel = player.ensure_brothel() if player else None
             super().__init__(
                 placeholder="Preview with girl...",
-                options=outer._build_girl_options(player),
+                options=outer._build_girl_options(player, brothel),
                 min_values=1,
                 max_values=1,
             )
