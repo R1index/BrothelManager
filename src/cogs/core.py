@@ -34,7 +34,11 @@ EMOJI_TRAIT = "✨"
 EMOJI_DIMENSION = "📏"
 EMOJI_BODY = "🧍"
 
-BLANK_FIELD = "\u200b"
+FIELD_BORDER_TOP = "╭────────────────"
+FIELD_BORDER_MID = "├────────────────"
+FIELD_BORDER_BOTTOM = "╰────────────────"
+FIELD_LINE_PREFIX = "│"
+FIELD_SUB_PREFIX = "│   ╰─"
 
 
 # -----------------------------------------------------------------------------
@@ -692,14 +696,22 @@ class Core(commands.Cog):
             mood = lust_state_label(lust_ratio)
             mood_icon = lust_state_icon(lust_ratio)
             condition_lines = [
-                f"{EMOJI_SPARK} Lv **{g.level}** • 📈 EXP {g.exp}",
-                f"{EMOJI_HEART} HP {g.health}/{g.health_max}",
-                f"{EMOJI_ENERGY} STA {g.stamina}/{g.stamina_max}",
-                f"{mood_icon} {EMOJI_LUST} Lust {g.lust}/{g.lust_max} [{mood}]",
-                "",
-                f"{EMOJI_STAT_VIT} Vit L{g.vitality_level} {vit_bar} {g.vitality_xp}/{vit_need}",
-                f"{EMOJI_STAT_END} End L{g.endurance_level} {end_bar} {g.endurance_xp}/{end_need}",
-                f"{EMOJI_LUST} Mastery L{g.lust_level} {lust_bar} {g.lust_xp}/{lust_need}",
+                FIELD_BORDER_TOP,
+                f"{FIELD_LINE_PREFIX} {EMOJI_SPARK} Lv **{g.level}**",
+                f"{FIELD_SUB_PREFIX}📈 EXP {g.exp}",
+                FIELD_BORDER_MID,
+                f"{FIELD_LINE_PREFIX} {EMOJI_HEART} HP {g.health}/{g.health_max}",
+                f"{FIELD_LINE_PREFIX} {EMOJI_ENERGY} STA {g.stamina}/{g.stamina_max}",
+                f"{FIELD_LINE_PREFIX} {mood_icon} {EMOJI_LUST} Lust {g.lust}/{g.lust_max}",
+                f"{FIELD_SUB_PREFIX}[{mood}]",
+                FIELD_BORDER_MID,
+                f"{FIELD_LINE_PREFIX} {EMOJI_STAT_VIT} Vitality L{g.vitality_level}",
+                f"{FIELD_SUB_PREFIX}{vit_bar} 📈 {g.vitality_xp}/{vit_need}",
+                f"{FIELD_LINE_PREFIX} {EMOJI_STAT_END} Endurance L{g.endurance_level}",
+                f"{FIELD_SUB_PREFIX}{end_bar} 📈 {g.endurance_xp}/{end_need}",
+                f"{FIELD_LINE_PREFIX} {EMOJI_LUST} Mastery L{g.lust_level}",
+                f"{FIELD_SUB_PREFIX}{lust_bar} 📈 {g.lust_xp}/{lust_need}",
+                FIELD_BORDER_BOTTOM,
             ]
             em.add_field(
                 name=f"{EMOJI_CONDITION} Condition",
@@ -708,13 +720,13 @@ class Core(commands.Cog):
             )
 
             # progress lines with prefs tags
-            def fmt_skill_lines(skmap, names, prefs):
-                lines = []
+            def fmt_skill_lines(skmap, names, prefs, header: str):
+                entries: list[list[str]] = []
                 for nm in names:
-                    lvl  = get_level(skmap, nm)
-                    xp   = get_xp(skmap, nm)
+                    lvl = get_level(skmap, nm)
+                    xp = get_xp(skmap, nm)
                     need = skill_xp_threshold(lvl)
-                    bar  = make_bar(xp, need, length=12)
+                    bar = make_bar(xp, need, length=10)
                     pref = str(prefs.get(nm, "true")).lower()
                     if pref == "false":
                         tag = "🚫"
@@ -722,51 +734,91 @@ class Core(commands.Cog):
                         tag = "💖"
                     else:
                         tag = "🔸"
-                    progress = f"{bar} 📈 {xp}/{need}"
-                    lines.append(f"{tag} **{nm}** L{lvl} {progress}")
-                if not lines:
-                    return f"{EMOJI_X} No training yet."
+                    entries.append([
+                        f"{FIELD_LINE_PREFIX} {tag} **{nm}** L{lvl}",
+                        f"{FIELD_SUB_PREFIX}{bar} 📈 {xp}/{need}",
+                    ])
+
+                if not entries:
+                    entries = [[f"{FIELD_LINE_PREFIX} {EMOJI_X} No training yet."]]
+
+                lines: list[str] = [FIELD_BORDER_TOP]
+                if header:
+                    lines.append(f"{FIELD_LINE_PREFIX} {header}")
+                    lines.append(FIELD_BORDER_MID)
+
+                for idx, block in enumerate(entries):
+                    lines.extend(block)
+                    if idx < len(entries) - 1:
+                        lines.append(FIELD_BORDER_MID)
+
+                lines.append(FIELD_BORDER_BOTTOM)
                 return "\n".join(lines)
 
             em.add_field(
                 name=f"{EMOJI_SKILL} Skills",
-                value=fmt_skill_lines(g.skills, MAIN_SKILLS, g.prefs_skills),
+                value=fmt_skill_lines(g.skills, MAIN_SKILLS, g.prefs_skills, "Focus"),
                 inline=True,
             )
-            em.add_field(name=BLANK_FIELD, value=BLANK_FIELD, inline=True)
 
             # bio block
-            bio_lines = []
+            bio_sections: list[list[str]] = []
+
+            primary_info: list[str] = []
             if g.breast_size:
-                bio_lines.append(f"🎀 Bust: **{g.breast_size}**")
+                primary_info.append(f"{FIELD_LINE_PREFIX} 🎀 Bust: **{g.breast_size}**")
             if g.body_shape:
-                bio_lines.append(f"{EMOJI_BODY} Body: **{g.body_shape}**")
+                primary_info.append(f"{FIELD_LINE_PREFIX} {EMOJI_BODY} Body: **{g.body_shape}**")
+            if primary_info:
+                bio_sections.append(primary_info)
+
             dims = []
-            if g.height_cm: dims.append(f"{g.height_cm} cm")
-            if g.weight_kg: dims.append(f"{g.weight_kg} kg")
-            if g.age:       dims.append(f"{g.age} y/o")
+            if g.height_cm:
+                dims.append(f"{g.height_cm} cm")
+            if g.weight_kg:
+                dims.append(f"{g.weight_kg} kg")
+            if g.age:
+                dims.append(f"{g.age} y/o")
             if dims:
-                bio_lines.append(f"{EMOJI_DIMENSION} {' / '.join(dims)}")
+                dim_lines = [f"{FIELD_LINE_PREFIX} {EMOJI_DIMENSION} Stats:"]
+                dim_lines.extend(f"{FIELD_SUB_PREFIX}{d}" for d in dims)
+                bio_sections.append(dim_lines)
+
             if g.traits:
-                bio_lines.append(f"{EMOJI_TRAIT} Traits: {', '.join(g.traits)}")
+                trait_lines = [f"{FIELD_LINE_PREFIX} {EMOJI_TRAIT} Traits:"]
+                trait_lines.extend(f"{FIELD_SUB_PREFIX}{t}" for t in g.traits)
+                bio_sections.append(trait_lines)
+
             if g.pregnant:
                 pts = g.pregnancy_points()
-                preg_bar = make_bar(pts, 30, length=12)
-                bio_lines.append(f"🤰 Pregnant {pts}/30  {preg_bar}")
+                preg_bar = make_bar(pts, 30, length=10)
+                bio_sections.append([
+                    f"{FIELD_LINE_PREFIX} 🤰 Pregnant {pts}/30",
+                    f"{FIELD_SUB_PREFIX}{preg_bar}",
+                ])
             else:
-                bio_lines.append("👶 Not pregnant")
+                bio_sections.append([f"{FIELD_LINE_PREFIX} 👶 Not pregnant"])
+
+            if not bio_sections:
+                bio_sections.append([f"{FIELD_LINE_PREFIX} {EMOJI_X} —"])
+
+            bio_lines = [FIELD_BORDER_TOP]
+            for idx, section in enumerate(bio_sections):
+                if idx > 0:
+                    bio_lines.append(FIELD_BORDER_MID)
+                bio_lines.extend(section)
+            bio_lines.append(FIELD_BORDER_BOTTOM)
             em.add_field(
                 name=f"{EMOJI_PROFILE} Profile",
-                value="\n".join(bio_lines) or f"{EMOJI_X} —",
+                value="\n".join(bio_lines),
                 inline=True,
             )
 
             em.add_field(
                 name=f"{EMOJI_SUBSKILL} Sub-skills",
-                value=fmt_skill_lines(g.subskills, SUB_SKILLS, g.prefs_subskills),
+                value=fmt_skill_lines(g.subskills, SUB_SKILLS, g.prefs_subskills, "Techniques"),
                 inline=True
             )
-            em.add_field(name=BLANK_FIELD, value=BLANK_FIELD, inline=True)
 
             pages.append(em)
 
