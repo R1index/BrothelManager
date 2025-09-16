@@ -331,6 +331,7 @@ class MarketWorkView(discord.ui.View):
             return None
         brothel = pl.ensure_brothel()
         brothel.apply_decay()
+        pl.renown = brothel.renown
         for g in pl.girls:
             g.normalize_skill_structs()
             g.apply_regen(brothel)
