@@ -46,5 +46,37 @@ class MarketWorkViewPaginationTests(unittest.TestCase):
         self.assertTrue(self.view.girl_next_page_btn.disabled)
 
 
+class MarketWorkViewMentorshipTests(unittest.TestCase):
+    def setUp(self):
+        self.player = Player(user_id=456)
+        mentor = Girl(uid="g777", base_id="base", name="Mentor Girl", rarity="SR")
+        mentor.mentorship_bonus = 0.15
+        mentor.mentorship_focus_type = "main"
+        mentor.mentorship_focus = "charm"
+        self.player.girls = [mentor]
+        self.market = Market(user_id=456, jobs=[])
+
+        async def _create_view():
+            return MarketWorkView(
+                user_id=456,
+                invoker_id=456,
+                forced_level=None,
+                player=self.player,
+                market=self.market,
+            )
+
+        self.view = asyncio.run(_create_view())
+
+    def test_mentorship_option_includes_name_and_uid(self):
+        options_by_value = {opt.value: opt for opt in self.view.girl_select.options}
+        girl_option = options_by_value["g777"]
+
+        self.assertIn("Mentor Girl", girl_option.label)
+        self.assertIn("g777", girl_option.label)
+        self.assertIn("Mentor Girl", girl_option.description)
+        self.assertIn("g777", girl_option.description)
+        self.assertIn("+15%", girl_option.description)
+
+
 if __name__ == "__main__":
     unittest.main()
