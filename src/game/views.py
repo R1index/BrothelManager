@@ -225,23 +225,50 @@ class MarketWorkView(discord.ui.View):
         ]
         if not market or not market.jobs:
             return options
-        seen_ids: set[str] = set()
-        for job in market.jobs[:24]:
-            job_id = getattr(job, "job_id", None) or f"J{len(seen_ids) + 1}"
-            if job_id in seen_ids:
-                continue
-            seen_ids.add(job_id)
+
+        seen_ids: set[str] = {"none"}
+        sanitized = False
+
+        for idx, job in enumerate(market.jobs[:24], start=1):
+            raw_id = getattr(job, "job_id", None)
+            job_id = str(raw_id).strip() if raw_id is not None else ""
+            base_id = job_id if job_id and job_id.lower() != "none" else f"J{idx}"
+
+            candidate = base_id
+            suffix = 2
+            while candidate.lower() == "none" or candidate in seen_ids:
+                candidate = f"{base_id}-{suffix}"
+                suffix += 1
+
+            if candidate != job_id:
+                try:
+                    job.job_id = candidate
+                    sanitized = True
+                except Exception:
+                    pass
+                if self.selected_job_id == job_id:
+                    self.selected_job_id = candidate
+
+            seen_ids.add(candidate)
+
             sub_part = f" + {job.demand_sub} L{job.demand_sub_level}" if job.demand_sub else ""
-            label = f"{job_id} • {job.demand_main} L{job.demand_level}{sub_part}"
+            label = f"{candidate} • {job.demand_main} L{job.demand_level}{sub_part}"
             desc = f"Pay {job.pay} • Diff {job.difficulty}"
             options.append(
                 discord.SelectOption(
                     label=label[:100],
-                    value=job_id,
+                    value=candidate,
                     description=desc[:100],
-                    default=job_id == self.selected_job_id,
+                    default=candidate == self.selected_job_id,
                 )
             )
+
+        if sanitized:
+            try:
+                save_market(market)
+            except Exception:
+                pass
+
         return options
 
     def _get_selected_girl(self):
