@@ -13,6 +13,17 @@ SUB_SKILLS  = ["VAGINAL", "ANAL", "ORAL", "BREAST"]  # NIPPLE -> BREAST
 RARITY_WEIGHTS = {"R": 70, "SR": 20, "SSR": 9, "UR": 1}
 RARITY_COLORS  = {"R": 0x9fa6b2, "SR": 0x60a5fa, "SSR": 0xf59e0b, "UR": 0x8b5cf6}
 
+# Base caps for secondary stats
+HEALTH_BASE_MAX      = 100
+HEALTH_MAX_CAP       = 220
+HEALTH_INCREMENT     = 10
+
+STAMINA_BASE_MAX     = 100
+STAMINA_MAX_CAP      = 200
+STAMINA_INCREMENT    = 5
+
+HEALTH_REGEN_SECONDS = 1800   # +1 hp per 30 minutes by default
+
 # Preferences for skills/subskills
 PREF_OPEN    = "true"   # open for training
 PREF_BLOCKED = "false"  # blocked (girl refuses jobs using it)
@@ -30,7 +41,7 @@ def now_ts() -> int:
     return int(time.time())
 
 def regen_stamina(current: int, last_ts: int, max_sta: int, per_tick: int = 1, tick_seconds: int = 600) -> tuple[int, int]:
-    """Regenerate stamina: +1 per 10 minutes (600s). Returns (new_stamina, new_last_ts)."""
+    """Regenerate stamina based on the provided tick size."""
     if current >= max_sta:
         return max_sta, now_ts()
     elapsed = max(0, now_ts() - last_ts)
@@ -40,6 +51,44 @@ def regen_stamina(current: int, last_ts: int, max_sta: int, per_tick: int = 1, t
     new_val = min(max_sta, current + int(ticks * per_tick))
     new_last = last_ts + int(ticks * tick_seconds)
     return new_val, new_last
+
+
+def regen_health(current: int, last_ts: int, max_hp: int, per_tick: int = 1, tick_seconds: int = HEALTH_REGEN_SECONDS) -> tuple[int, int]:
+    """Slow health regeneration (default +1 every 30 minutes)."""
+    if current >= max_hp:
+        return max_hp, now_ts()
+    elapsed = max(0, now_ts() - last_ts)
+    ticks = elapsed // tick_seconds
+    if ticks <= 0:
+        return current, last_ts
+    new_val = min(max_hp, current + int(ticks * per_tick))
+    new_last = last_ts + int(ticks * tick_seconds)
+    return new_val, new_last
+
+
+def health_rank(max_hp: int) -> int:
+    return max(1, 1 + (max_hp - HEALTH_BASE_MAX) // max(1, HEALTH_INCREMENT))
+
+
+def endurance_rank(max_sta: int) -> int:
+    return max(1, 1 + (max_sta - STAMINA_BASE_MAX) // max(1, STAMINA_INCREMENT))
+
+
+def health_xp_threshold(max_hp: int) -> int:
+    rank = health_rank(max_hp)
+    return 120 + (rank - 1) * 45
+
+
+def endurance_xp_threshold(max_sta: int) -> int:
+    rank = endurance_rank(max_sta)
+    return 110 + (rank - 1) * 40
+
+
+def stamina_regen_from_endurance(max_sta: int) -> int:
+    """Stamina regen per tick grows with endurance rank."""
+    rank = endurance_rank(max_sta)
+    # Base 1 per tick, +1 at ranks 3,5,...
+    return 1 + max(0, (rank - 1) // 2)
 
 # -----------------------------------------------------------------------------
 # XP thresholds
@@ -145,10 +194,16 @@ class Girl(BaseModel):
 
     image_url: str = ""
 
-    # Stamina
-    stamina: int = 100
-    stamina_max: int = 100
+    # Vital stats
+    health: int = HEALTH_BASE_MAX
+    health_max: int = HEALTH_BASE_MAX
+    health_last_ts: int = Field(default_factory=now_ts)
+    health_xp: int = 0
+
+    stamina: int = STAMINA_BASE_MAX
+    stamina_max: int = STAMINA_BASE_MAX
     stamina_last_ts: int = Field(default_factory=now_ts)
+    endurance_xp: int = 0
 
     # Skills (canonical structure)
     skills: Dict[str, Dict[str, int]]    = Field(default_factory=lambda: {k: {"level": 0, "xp": 0} for k in MAIN_SKILLS})
@@ -171,8 +226,27 @@ class Girl(BaseModel):
     prefs_subskills: Dict[str, str] = Field(default_factory=lambda: {k: PREF_OPEN for k in SUB_SKILLS})
 
     def apply_regen(self):
-        # stamina regen
-        self.stamina, self.stamina_last_ts = regen_stamina(self.stamina, self.stamina_last_ts, self.stamina_max)
+        # clamp caps within allowed ranges
+        self.health_max = int(max(HEALTH_BASE_MAX, min(self.health_max, HEALTH_MAX_CAP)))
+        self.stamina_max = int(max(STAMINA_BASE_MAX, min(self.stamina_max, STAMINA_MAX_CAP)))
+        self.health = int(min(self.health, self.health_max))
+        self.stamina = int(min(self.stamina, self.stamina_max))
+
+        # stamina regen scales with endurance rank
+        sta_per_tick = stamina_regen_from_endurance(self.stamina_max)
+        self.stamina, self.stamina_last_ts = regen_stamina(
+            self.stamina,
+            self.stamina_last_ts,
+            self.stamina_max,
+            per_tick=sta_per_tick,
+        )
+
+        # health regen
+        self.health, self.health_last_ts = regen_health(
+            self.health,
+            self.health_last_ts,
+            self.health_max,
+        )
         # pregnancy auto-progress + auto-clear at full term
         if self.pregnant and self.pregnant_since_ts:
             elapsed = max(0, now_ts() - self.pregnant_since_ts)
@@ -180,6 +254,41 @@ class Girl(BaseModel):
             if points >= PREGNANCY_TOTAL_POINTS:
                 self.pregnant = False
                 self.pregnant_since_ts = None
+
+    def gain_health_xp(self, amount: int):
+        amount = int(max(0, amount))
+        if amount <= 0:
+            return
+        self.health_xp += amount
+        while True:
+            threshold = health_xp_threshold(self.health_max)
+            if self.health_xp < threshold:
+                break
+            if self.health_max >= HEALTH_MAX_CAP:
+                # Clamp progress just below the cap to avoid runaway loops
+                self.health_xp = min(self.health_xp, threshold - 1)
+                break
+            self.health_xp -= threshold
+            self.health_max = min(HEALTH_MAX_CAP, self.health_max + HEALTH_INCREMENT)
+            # heal a bit on improvement
+            self.health = min(self.health_max, self.health + HEALTH_INCREMENT)
+
+    def gain_endurance_xp(self, amount: int):
+        amount = int(max(0, amount))
+        if amount <= 0:
+            return
+        self.endurance_xp += amount
+        while True:
+            threshold = endurance_xp_threshold(self.stamina_max)
+            if self.endurance_xp < threshold:
+                break
+            if self.stamina_max >= STAMINA_MAX_CAP:
+                self.endurance_xp = min(self.endurance_xp, threshold - 1)
+                break
+            self.endurance_xp -= threshold
+            inc = min(STAMINA_INCREMENT, STAMINA_MAX_CAP - self.stamina_max)
+            self.stamina_max += inc
+            self.stamina = min(self.stamina + inc, self.stamina_max)
 
     def pregnancy_points(self) -> int:
         """How many pregnancy points (0..30) have elapsed."""
