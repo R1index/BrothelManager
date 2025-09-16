@@ -44,6 +44,7 @@ python -m src.bot
 src/
   bot.py         – запуск бота и загрузка когов
   cogs/          – основные (core.py) и админские (admin.py) команды
+  game/          – сервисы, представления и форматтеры (embeds, views, repository)
   models.py      – pydantic‑модели игрока, персонажей и пр.
   storage.py     – работа с данными игроков, гачей и рынком
 assets/          – локальные изображения персонажей
