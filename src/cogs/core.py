@@ -1,4 +1,5 @@
 import os
+import time
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
@@ -20,6 +21,7 @@ EMOJI_GIRL = "👧"
 EMOJI_MARKET = "🛒"
 EMOJI_ENERGY = "⚡"
 EMOJI_HEART = "❤️"
+EMOJI_LUST = "🔥"
 EMOJI_OK = "✅"
 EMOJI_X = "❌"
 
@@ -104,6 +106,394 @@ class Paginator(discord.ui.View):
         self._update_buttons()
         await self._edit_page(interaction)
 
+
+def lust_state_label(ratio: float) -> str:
+    """Textual description for lust ratio (0..1)."""
+    if ratio >= 0.9:
+        return "Overdrive"
+    if ratio >= 0.7:
+        return "Heated"
+    if ratio >= 0.45:
+        return "Aroused"
+    if ratio >= 0.25:
+        return "Warming up"
+    return "Dormant"
+
+
+class MarketWorkView(discord.ui.View):
+    BASE_COLOR = 0x34D399
+    SUCCESS_COLOR = 0x22C55E
+    FAILURE_COLOR = 0xEF4444
+
+    def __init__(self, *, user_id: int, invoker_id: int, forced_level: int | None, player, market):
+        super().__init__(timeout=120)
+        self.user_id = user_id
+        self.invoker_id = invoker_id
+        self.forced_level = forced_level
+        self.selected_girl_uid: str | None = None
+        self.selected_job_id: str | None = None
+        self.last_result_lines: list[str] | None = None
+        self.last_result_color: int | None = None
+        self._player_cache = player
+        self._market_cache = market
+
+        self.girl_select = self.GirlSelect(self, player)
+        self.job_select = self.JobSelect(self, market)
+        self.add_item(self.girl_select)
+        self.add_item(self.job_select)
+        self._apply_state(player, market)
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+    def _apply_state(self, player=None, market=None):
+        if player is not None:
+            self._player_cache = player
+        if market is not None:
+            self._market_cache = market
+
+        player = self._player_cache
+        market = self._market_cache
+
+        if player and self.selected_girl_uid and not player.get_girl(self.selected_girl_uid):
+            self.selected_girl_uid = None
+        if market and self.selected_job_id and not any(j.job_id == self.selected_job_id for j in market.jobs):
+            self.selected_job_id = None
+
+        self.girl_select.options = self._build_girl_options(player)
+        self.girl_select.disabled = not (player and player.girls)
+
+        self.job_select.options = self._build_job_options(market)
+        no_jobs = not (market and market.jobs)
+        self.job_select.disabled = no_jobs
+        if no_jobs:
+            self.selected_job_id = None
+
+        self._update_controls()
+
+    def _update_controls(self):
+        can_work = (
+            self.selected_girl_uid is not None
+            and self.selected_job_id is not None
+            and self._market_cache
+            and any(j.job_id == self.selected_job_id for j in self._market_cache.jobs)
+        )
+        self.work_btn.disabled = not can_work
+
+    def _build_girl_options(self, player) -> list[discord.SelectOption]:
+        options = [
+            discord.SelectOption(
+                label="— No preview —",
+                value="none",
+                default=self.selected_girl_uid is None,
+            )
+        ]
+        if not player or not player.girls:
+            return options
+        for g in player.girls[:24]:
+            label = f"{g.name} ({g.uid})"
+            mood = lust_state_label(g.lust / g.lust_max if g.lust_max else 0.0)
+            desc = (
+                f"{EMOJI_HEART} {g.health}/{g.health_max} • "
+                f"{EMOJI_ENERGY} {g.stamina}/{g.stamina_max} • "
+                f"{EMOJI_LUST} {g.lust}/{g.lust_max} [{mood}]"
+            )
+            options.append(
+                discord.SelectOption(
+                    label=label[:100],
+                    value=g.uid,
+                    description=desc[:100],
+                    default=g.uid == self.selected_girl_uid,
+                )
+            )
+        return options
+
+    def _build_job_options(self, market) -> list[discord.SelectOption]:
+        options = [
+            discord.SelectOption(
+                label="— Select job —",
+                value="none",
+                default=self.selected_job_id is None,
+            )
+        ]
+        if not market or not market.jobs:
+            return options
+        for job in market.jobs[:24]:
+            sub_part = f" + {job.demand_sub} L{job.demand_sub_level}" if job.demand_sub else ""
+            label = f"{job.job_id} • {job.demand_main} L{job.demand_level}{sub_part}"
+            desc = f"Pay {job.pay} • Diff {job.difficulty}"
+            options.append(
+                discord.SelectOption(
+                    label=label[:100],
+                    value=job.job_id,
+                    description=desc[:100],
+                    default=job.job_id == self.selected_job_id,
+                )
+            )
+        return options
+
+    def _get_selected_girl(self):
+        if not self._player_cache or not self.selected_girl_uid:
+            return None
+        return self._player_cache.get_girl(self.selected_girl_uid)
+
+    def _get_selected_job(self):
+        if not self._market_cache or not self.selected_job_id:
+            return None
+        for job in self._market_cache.jobs:
+            if job.job_id == self.selected_job_id:
+                return job
+        return None
+
+    def _load_player(self):
+        pl = load_player(self.user_id)
+        if not pl:
+            return None
+        for g in pl.girls:
+            g.normalize_skill_structs()
+            g.apply_regen()
+        save_player(pl)
+        return pl
+
+    def _load_market(self, force_refresh: bool = False):
+        if force_refresh:
+            return refresh_market_if_stale(self.user_id, max_age_sec=0, forced_level=self.forced_level)
+        m = load_market(self.user_id)
+        if not m:
+            return refresh_market_if_stale(self.user_id, max_age_sec=0, forced_level=self.forced_level)
+        if self.forced_level is not None and m.level != self.forced_level:
+            return refresh_market_if_stale(self.user_id, max_age_sec=0, forced_level=self.forced_level)
+        if time.time() - m.ts > 300:
+            return refresh_market_if_stale(self.user_id, max_age_sec=0, forced_level=self.forced_level)
+        return m
+
+    async def _ensure_owner(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.invoker_id:
+            await interaction.response.send_message("This isn't your view.", ephemeral=True)
+            return False
+        return True
+
+    def build_embed(self) -> discord.Embed:
+        market = self._market_cache
+        color = self.last_result_color or self.BASE_COLOR
+        level = market.level if market else 0
+        embed = discord.Embed(
+            title=f"{EMOJI_MARKET} Service Market — Lv{level}",
+            color=color,
+        )
+        desc_parts: list[str] = []
+        if self.last_result_lines:
+            desc_parts.append("\n".join(self.last_result_lines))
+
+        girl = self._get_selected_girl()
+        if girl:
+            ratio = girl.lust / girl.lust_max if girl.lust_max else 0.0
+            mood = lust_state_label(ratio)
+            desc_parts.append(
+                f"Previewing **{girl.name}** • `{girl.uid}`\n"
+                f"{EMOJI_HEART} {girl.health}/{girl.health_max} • "
+                f"{EMOJI_ENERGY} {girl.stamina}/{girl.stamina_max} • "
+                f"{EMOJI_LUST} {girl.lust}/{girl.lust_max} ({mood})"
+            )
+        else:
+            desc_parts.append("Select a girl and job to preview or deploy.")
+        embed.description = "\n\n".join(desc_parts)
+
+        if not market or not market.jobs:
+            embed.add_field(name="Jobs", value="No jobs available right now.", inline=False)
+            embed.set_footer(text="Select a girl and job, then press Work. Market autorefreshes every 5 minutes.")
+            return embed
+
+        for job in market.jobs:
+            highlight = "⭐" if job.job_id == self.selected_job_id else "•"
+            sub_part = f" + {job.demand_sub} L{job.demand_sub_level}" if job.demand_sub else ""
+            field_name = f"{highlight} `{job.job_id}` • {job.demand_main} L{job.demand_level}{sub_part}"
+            value_lines = [f"{EMOJI_COIN} Base pay: **{job.pay}** • Difficulty: {job.difficulty}"]
+
+            if girl:
+                info = evaluate_job(girl, job)
+                if info["blocked_main"] or (job.demand_sub and info["blocked_sub"]):
+                    value_lines.append("🚫 Preferences block this job.")
+                elif not info["meets_main"] or not info["meets_sub"]:
+                    lacking = []
+                    if not info["meets_main"]:
+                        lacking.append(f"{job.demand_main} L{job.demand_level}")
+                    if job.demand_sub and not info["meets_sub"]:
+                        lacking.append(f"{job.demand_sub} L{job.demand_sub_level}")
+                    value_lines.append("⚠️ Needs: " + ", ".join(lacking))
+                elif not info["health_ok"]:
+                    value_lines.append("⚠️ Needs healing before working.")
+                elif not info["stamina_ok"]:
+                    value_lines.append(
+                        f"⚠️ Requires {info['stamina_cost']} stamina (current {girl.stamina})."
+                    )
+                elif not info["lust_ok"]:
+                    value_lines.append(
+                        f"🔥 Needs {info['lust_cost']} lust (current {girl.lust})."
+                    )
+                else:
+                    success_pct = int(round(info["success_chance"] * 100))
+                    injury_pct = int(round(info["injury_chance"] * 100))
+                    potential_pay = max(0, int(info["base_reward"] * info["reward_multiplier"]))
+                    expected_pay = max(0, int(info["expected_reward"]))
+                    mood = lust_state_label(info["lust_ratio"])
+                    value_lines.append(f"🎯 Success: {success_pct}% • Injury: {injury_pct}%")
+                    value_lines.append(
+                        f"⚡ {info['stamina_cost']} • {EMOJI_LUST} {info['lust_cost']} • Mood: {mood}"
+                    )
+                    value_lines.append(
+                        f"{EMOJI_COIN} Potential: **{potential_pay}** (x{info['reward_multiplier']:.2f}) • E≈ {expected_pay}"
+                    )
+            else:
+                value_lines.append("Use the selectors to preview with one of your girls.")
+
+            embed.add_field(name=field_name, value="\n".join(value_lines), inline=False)
+
+        embed.set_footer(text="Select a girl and job, then press Work. Market autorefreshes every 5 minutes.")
+        return embed
+
+    def _format_result_lines(self, result: dict, girl, job) -> list[str]:
+        chance_pct = int(round(result.get("success_chance", 0.0) * 100))
+        injury_pct = int(round(result.get("injury_chance", 0.0) * 100))
+        stamina_cost = result.get("stamina_cost", 0)
+        lust_cost = result.get("lust_cost", 0)
+        lust_after = result.get("lust_after", girl.lust)
+        after_ratio = result.get("lust_after_ratio", girl.lust / girl.lust_max if girl.lust_max else 0.0)
+        mood_after = lust_state_label(after_ratio)
+        lines: list[str] = []
+
+        if result.get("ok"):
+            reward = result.get("reward", 0)
+            base_reward = result.get("base_reward", job.pay if job else 0)
+            multiplier = result.get("reward_multiplier", 1.0)
+            lines.append(f"{EMOJI_OK} Success! Reward: {EMOJI_COIN} **{reward}**")
+            lines.append(f"{EMOJI_COIN} Base {base_reward} × {multiplier:.2f}")
+        else:
+            reason = result.get("reason", "Failed")
+            lines.append(f"{EMOJI_X} {reason}.")
+
+        if chance_pct or injury_pct:
+            lines.append(f"🎯 {chance_pct}% • 🩹 {injury_pct}% chance")
+
+        if result.get("lust_before") is None:
+            lines.append(f"⚡ Needs {stamina_cost} • {EMOJI_LUST} Needs {lust_cost}")
+        else:
+            lines.append(f"⚡ Spent {stamina_cost} • {EMOJI_LUST} Spent {lust_cost}")
+        lines.append(f"{EMOJI_LUST} Mood now: {mood_after} ({lust_after}/{girl.lust_max})")
+
+        if result.get("injured"):
+            lines.append(
+                f"⚠️ Took {result.get('injury_amount', 0)} damage (HP {girl.health}/{girl.health_max})."
+            )
+        if not result.get("ok") and girl.health <= 0:
+            lines.append("🚑 Girl is incapacitated. Use /heal before working again.")
+        return lines
+
+    # ------------------------------------------------------------------
+    # UI callbacks
+    # ------------------------------------------------------------------
+    class GirlSelect(discord.ui.Select):
+        def __init__(self, outer: "MarketWorkView", player):
+            self.outer = outer
+            super().__init__(
+                placeholder="Preview with girl...",
+                options=outer._build_girl_options(player),
+                min_values=1,
+                max_values=1,
+            )
+
+        async def callback(self, interaction: discord.Interaction):
+            if not await self.outer._ensure_owner(interaction):
+                return
+            value = self.values[0]
+            self.outer.selected_girl_uid = None if value == "none" else value
+            player = self.outer._load_player()
+            market = self.outer._load_market()
+            self.outer._apply_state(player, market)
+            embed = self.outer.build_embed()
+            await interaction.response.edit_message(embed=embed, view=self.outer)
+
+    class JobSelect(discord.ui.Select):
+        def __init__(self, outer: "MarketWorkView", market):
+            self.outer = outer
+            super().__init__(
+                placeholder="Select job...",
+                options=outer._build_job_options(market),
+                min_values=1,
+                max_values=1,
+            )
+
+        async def callback(self, interaction: discord.Interaction):
+            if not await self.outer._ensure_owner(interaction):
+                return
+            value = self.values[0]
+            self.outer.selected_job_id = None if value == "none" else value
+            player = self.outer._load_player()
+            market = self.outer._load_market()
+            self.outer._apply_state(player, market)
+            embed = self.outer.build_embed()
+            await interaction.response.edit_message(embed=embed, view=self.outer)
+
+    @discord.ui.button(label="Refresh", style=discord.ButtonStyle.secondary, emoji="🔄")
+    async def refresh_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._ensure_owner(interaction):
+            return
+        market = self._load_market(force_refresh=True)
+        player = self._load_player()
+        self._apply_state(player, market)
+        embed = self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Work", style=discord.ButtonStyle.success, emoji="🛠️")
+    async def work_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._ensure_owner(interaction):
+            return
+        if not self.selected_girl_uid or not self.selected_job_id:
+            await interaction.response.send_message("Select a girl and job first.", ephemeral=True)
+            return
+
+        player = self._load_player()
+        market = self._load_market()
+        if not player:
+            await interaction.response.send_message("Player profile not found.", ephemeral=True)
+            return
+        girl = player.get_girl(self.selected_girl_uid)
+        if not girl:
+            self.selected_girl_uid = None
+            self._apply_state(player, market)
+            embed = self.build_embed()
+            await interaction.response.edit_message(embed=embed, view=self)
+            return
+        if not market:
+            market = self._load_market(force_refresh=True)
+        job = None
+        if market:
+            for j in market.jobs:
+                if j.job_id == self.selected_job_id:
+                    job = j
+                    break
+        if not job:
+            self.selected_job_id = None
+            self._apply_state(player, market)
+            embed = self.build_embed()
+            await interaction.response.edit_message(embed=embed, view=self)
+            await interaction.followup.send("Selected job is no longer available.", ephemeral=True)
+            return
+
+        result = resolve_job(player, job, girl)
+        success = result.get("ok")
+        if success:
+            market.jobs = [j for j in market.jobs if j.job_id != job.job_id]
+            market.ts = int(time.time())
+            save_market(market)
+            self.selected_job_id = None
+
+        save_player(player)
+        self.last_result_color = self.SUCCESS_COLOR if success else self.FAILURE_COLOR
+        self.last_result_lines = self._format_result_lines(result, girl, job)
+        self._apply_state(player, market)
+        embed = self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
 
 # -----------------------------------------------------------------------------
 # Core Cog
@@ -264,24 +654,44 @@ class Core(commands.Cog):
                 em.set_image(url=g.image_url)
                 files.append(None)
 
-            # base stats
+            # condition & progression
             vit_need = stat_xp_threshold(g.vitality_level)
             end_need = stat_xp_threshold(g.endurance_level)
+            lust_need = stat_xp_threshold(g.lust_level)
             vit_bar = make_bar(g.vitality_xp, vit_need, length=10)
             end_bar = make_bar(g.endurance_xp, end_need, length=10)
-            em.add_field(name="Lvl / EXP", value=f"{g.level} / {g.exp}", inline=True)
+            lust_bar = make_bar(g.lust_xp, lust_need, length=10)
+            lust_ratio = g.lust / g.lust_max if g.lust_max else 0.0
+            mood = lust_state_label(lust_ratio)
+            condition_lines = [
+                f"Lvl **{g.level}** • EXP {g.exp}",
+                f"{EMOJI_HEART} {g.health}/{g.health_max}",
+                f"{EMOJI_ENERGY} {g.stamina}/{g.stamina_max}",
+                f"{EMOJI_LUST} {g.lust}/{g.lust_max} ({mood})",
+                "",
+                f"Vit L{g.vitality_level} {vit_bar} {g.vitality_xp}/{vit_need}",
+                f"End L{g.endurance_level} {end_bar} {g.endurance_xp}/{end_need}",
+                f"Lust L{g.lust_level} {lust_bar} {g.lust_xp}/{lust_need}",
+            ]
+            em.add_field(name="Condition", value="\n".join(condition_lines), inline=True)
+
+            # progress lines with prefs tags
+            def fmt_skill_lines(skmap, names, prefs):
+                lines = []
+                for nm in names:
+                    lvl  = get_level(skmap, nm)
+                    xp   = get_xp(skmap, nm)
+                    need = skill_xp_threshold(lvl)
+                    bar  = make_bar(xp, need, length=12)
+                    pref = str(prefs.get(nm, "true")).lower()
+                    tag  = "🚫" if pref == "false" else ("💗" if pref == "fav" else "•")
+                    lines.append(f"{tag} **{nm}** L{lvl} {bar} {xp}/{need}")
+                return "\n".join(lines)
+
             em.add_field(
-                name="Vitals",
-                value=f"{EMOJI_HEART} {g.health}/{g.health_max}\n{EMOJI_ENERGY} {g.stamina}/{g.stamina_max}",
-                inline=True,
-            )
-            em.add_field(
-                name="Resilience",
-                value=(
-                    f"Vit L{g.vitality_level} {vit_bar} {g.vitality_xp}/{vit_need}\n"
-                    f"End L{g.endurance_level} {end_bar} {g.endurance_xp}/{end_need}"
-                ),
-                inline=False,
+                name="Skills",
+                value=fmt_skill_lines(g.skills, MAIN_SKILLS, g.prefs_skills),
+                inline=True
             )
 
             # bio block
@@ -300,30 +710,12 @@ class Core(commands.Cog):
                 bio_lines.append(f"🤰 Pregnant {pts}/30  {preg_bar}")
             else:
                 bio_lines.append("Not pregnant")
-            em.add_field(name="Profile", value="\n".join(bio_lines) or "—", inline=False)
-
-            # progress lines with prefs tags
-            def fmt_skill_lines(skmap, names, prefs):
-                lines = []
-                for nm in names:
-                    lvl  = get_level(skmap, nm)
-                    xp   = get_xp(skmap, nm)
-                    need = skill_xp_threshold(lvl)
-                    bar  = make_bar(xp, need, length=12)
-                    pref = str(prefs.get(nm, "true")).lower()
-                    tag  = "🚫" if pref == "false" else ("💗" if pref == "fav" else "•")
-                    lines.append(f"{tag} **{nm}** L{lvl} {bar} {xp}/{need}")
-                return "\n".join(lines)
+            em.add_field(name="Profile", value="\n".join(bio_lines) or "—", inline=True)
 
             em.add_field(
-                name="Skills",
-                value=fmt_skill_lines(g.skills, MAIN_SKILLS, g.prefs_skills),
-                inline=False
-            )
-            em.add_field(
-                name="Sub",
+                name="Sub-skills",
                 value=fmt_skill_lines(g.subskills, SUB_SKILLS, g.prefs_subskills),
-                inline=False
+                inline=True
             )
 
             pages.append(em)
@@ -332,7 +724,7 @@ class Core(commands.Cog):
         view = Paginator(pages, interaction.user.id, timeout=120, files=files)
         await view.send(interaction)
 
-    @app_commands.command(name="market", description="Show the service market (auto-refreshes every 5 minutes). Optionally specify a level")
+    @app_commands.command(name="market", description="Browse the market and send a girl to work")
     @app_commands.describe(level="Optional market level override")
     async def market(self, interaction: discord.Interaction, level: int | None = None):
         uid = interaction.user.id
@@ -354,135 +746,17 @@ class Core(commands.Cog):
                 )
                 return
 
-        m = refresh_market_if_stale(uid, max_age_sec=300, forced_level=level)
+        market = refresh_market_if_stale(uid, max_age_sec=300, forced_level=level)
 
-        def build_market_embed(market, selected_girl=None):
-            embed = discord.Embed(
-                title=f"{EMOJI_MARKET} Service Market — Lv{market.level}",
-                color=0x34D399
-            )
-            if not market.jobs:
-                embed.description = "No jobs available right now."
-            elif selected_girl:
-                embed.description = (
-                    f"Previewing with **{selected_girl.name}** • `{selected_girl.uid}`\n"
-                    f"{EMOJI_HEART} {selected_girl.health}/{selected_girl.health_max} • "
-                    f"{EMOJI_ENERGY} {selected_girl.stamina}/{selected_girl.stamina_max}"
-                )
-            else:
-                embed.description = "Select a girl below to preview success, reward and injury chances."
-
-            for j in market.jobs:
-                sub_part = f" + {j.demand_sub} L{j.demand_sub_level}" if j.demand_sub else ""
-                field_name = f"`{j.job_id}` • {j.demand_main} L{j.demand_level}{sub_part}"
-                value_lines = [f"{EMOJI_COIN} Base pay: **{j.pay}** • Difficulty: {j.difficulty}"]
-
-                if selected_girl:
-                    info = evaluate_job(selected_girl, j)
-                    if info["blocked_main"] or (j.demand_sub and info["blocked_sub"]):
-                        value_lines.append("🚫 Preferences block this job.")
-                    elif not info["meets_main"] or not info["meets_sub"]:
-                        lacking = []
-                        if not info["meets_main"]:
-                            lacking.append(f"{j.demand_main} L{j.demand_level}")
-                        if j.demand_sub and not info["meets_sub"]:
-                            lacking.append(f"{j.demand_sub} L{j.demand_sub_level}")
-                        value_lines.append("⚠️ Needs: " + ", ".join(lacking))
-                    elif not info["health_ok"]:
-                        value_lines.append("⚠️ Needs healing before working.")
-                    elif not info["stamina_ok"]:
-                        value_lines.append(
-                            f"⚠️ Requires {info['stamina_cost']} stamina (current {selected_girl.stamina})."
-                        )
-                    else:
-                        success_pct = int(round(info["success_chance"] * 100))
-                        injury_pct = int(round(info["injury_chance"] * 100))
-                        potential_pay = max(0, int(info["base_reward"] * info["reward_multiplier"]))
-                        expected_pay = max(0, int(info["expected_reward"]))
-                        value_lines.append(
-                            "\n".join(
-                                [
-                                    f"🎯 Success: {success_pct}% • Injury: {injury_pct}%",
-                                    f"{EMOJI_COIN} Potential: **{potential_pay}** (x{info['reward_multiplier']:.2f})",
-                                    f"⚡ Cost: {info['stamina_cost']} • E[pay] ≈ {expected_pay}",
-                                ]
-                            )
-                        )
-                else:
-                    value_lines.append("Use the selector to preview with one of your girls.")
-
-                embed.add_field(name=field_name, value="\n".join(value_lines), inline=False)
-
-            embed.set_footer(text="Auto-refresh: every 5 minutes • Preview considers stamina, health and endurance")
-            return embed
-
-        class MarketView(discord.ui.View):
-            def __init__(self, market, invoker_id, level, player, user_id, selected_uid=None):
-                super().__init__(timeout=90)
-                self.market = market
-                self.invoker_id = invoker_id
-                self.level = level
-                self.player = player
-                self.user_id = user_id
-                self.selected_uid = selected_uid
-
-                options = [discord.SelectOption(label="— No preview —", value="none", default=selected_uid is None)]
-                for g in player.girls[:24]:  # Discord limit: 25 options
-                    label = f"{g.name} ({g.uid})"[:100]
-                    desc = f"HP {g.health}/{g.health_max} • STA {g.stamina}/{g.stamina_max}"[:100]
-                    options.append(discord.SelectOption(label=label, value=g.uid, description=desc, default=selected_uid == g.uid))
-
-                self.selector = discord.ui.Select(placeholder="Preview with girl...", options=options)
-
-                async def _on_select(interaction2: discord.Interaction):
-                    if interaction2.user.id != self.invoker_id:
-                        await interaction2.response.send_message("This isn't your view.", ephemeral=True)
-                        return
-                    choice = self.selector.values[0]
-                    new_selected = None if choice == "none" else choice
-                    pl_updated = load_player(self.user_id)
-                    if pl_updated:
-                        for gg in pl_updated.girls:
-                            gg.normalize_skill_structs()
-                            gg.apply_regen()
-                        save_player(pl_updated)
-                    selected = pl_updated.get_girl(new_selected) if (pl_updated and new_selected) else None
-                    embed2 = build_market_embed(self.market, selected)
-                    await interaction2.response.edit_message(
-                        embed=embed2,
-                        view=MarketView(self.market, self.invoker_id, self.level, pl_updated or self.player, self.user_id, new_selected),
-                    )
-
-                self.selector.callback = _on_select
-                self.add_item(self.selector)
-
-            @discord.ui.button(label="Refresh", style=discord.ButtonStyle.primary, emoji="🔄")
-            async def refresh(self, interaction2: discord.Interaction, button: discord.ui.Button):
-                if interaction2.user.id != self.invoker_id:
-                    await interaction2.response.send_message("This isn't your view.", ephemeral=True)
-                    return
-                # force refresh, keeping selected level
-                m2 = refresh_market_if_stale(self.user_id, max_age_sec=0, forced_level=self.level)
-                pl_updated = load_player(self.user_id)
-                if pl_updated:
-                    for gg in pl_updated.girls:
-                        gg.normalize_skill_structs()
-                        gg.apply_regen()
-                    save_player(pl_updated)
-                selected = pl_updated.get_girl(self.selected_uid) if (pl_updated and self.selected_uid) else None
-                embed2 = build_market_embed(m2, selected)
-                await interaction2.response.edit_message(
-                    embed=embed2,
-                    view=MarketView(m2, self.invoker_id, self.level, pl_updated or self.player, self.user_id, self.selected_uid),
-                )
-
-        selected_girl = None
-        embed = build_market_embed(m, selected_girl)
-        await interaction.response.send_message(
-            embed=embed,
-            view=MarketView(m, uid, level, pl, uid, None),
-            ephemeral=True,
+        view = MarketWorkView(
+            user_id=uid,
+            invoker_id=interaction.user.id,
+            forced_level=level,
+            player=pl,
+            market=market,
         )
+        embed = view.build_embed()
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     @app_commands.command(name="heal", description="Heal a girl using coins")
     @app_commands.describe(girl_id="Girl UID to heal", amount="Amount of health to restore (default: full)")
@@ -530,70 +804,6 @@ class Core(commands.Cog):
             f"Current HP: {girl.health}/{girl.health_max}",
         ]
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
-
-    @app_commands.command(name="work", description="Do a market job with a selected girl")
-    @app_commands.describe(job_id="Job ID, e.g. J1", girl_id="Girl UID, e.g. g001#1234")
-    async def work(self, interaction: discord.Interaction, job_id: str, girl_id: str):
-        uid = interaction.user.id
-        pl = load_player(uid)
-        if not pl:
-            await interaction.response.send_message("Use /start first.", ephemeral=True)
-            return
-        m = load_market(uid)
-        if not m:
-            await interaction.response.send_message(
-                "Use /market to generate the market first.", ephemeral=True
-            )
-            return
-        job = next((j for j in m.jobs if j.job_id == job_id), None)
-        if not job:
-            await interaction.response.send_message("Invalid job ID.", ephemeral=True)
-            return
-        girl = pl.get_girl(girl_id)
-        if not girl:
-            await interaction.response.send_message("Invalid girl ID.", ephemeral=True)
-            return
-
-        result = resolve_job(pl, job, girl)
-        if result["ok"]:
-            # remove job, persist changes
-            m.jobs = [j for j in m.jobs if j.job_id != job_id]
-            save_market(m)
-            save_player(pl)
-
-            chance_pct = int(round(result.get("success_chance", 0.0) * 100))
-            injury_pct = int(round(result.get("injury_chance", 0.0) * 100))
-            lines = [
-                f"{EMOJI_OK} Success! Reward: {EMOJI_COIN} **{result['reward']}**",
-                f"Base pay {EMOJI_COIN} {result.get('base_reward', job.pay)} × {result.get('reward_multiplier', 1.0):.2f}",
-                f"🎯 Chance: {chance_pct}%",
-                f"⚡ Stamina used: {result.get('stamina_cost', 0)}",
-                f"🩹 Injury chance rolled: {injury_pct}%",
-            ]
-            if result.get("injured"):
-                lines.append(
-                    f"⚠️ {girl.name} took {result.get('injury_amount', 0)} damage (HP {girl.health}/{girl.health_max})."
-                )
-            em = discord.Embed(description="\n".join(lines), color=0x22C55E)
-            await interaction.response.send_message(embed=em)
-        else:
-            save_player(pl)
-            chance_pct = int(round(result.get("success_chance", 0.0) * 100))
-            injury_pct = int(round(result.get("injury_chance", 0.0) * 100))
-            lines = [
-                f"{EMOJI_X} {result['reason']}. No payout.",
-                f"🎯 Chance was {chance_pct}%",
-                f"⚡ Stamina used: {result.get('stamina_cost', 0)}",
-                f"🩹 Injury chance rolled: {injury_pct}%",
-            ]
-            if result.get("injured"):
-                lines.append(
-                    f"⚠️ Injury: -{result.get('injury_amount', 0)} HP (now {girl.health}/{girl.health_max})."
-                )
-            if girl.health <= 0:
-                lines.append("🚑 Girl is incapacitated. Use /heal to restore health before working again.")
-            em = discord.Embed(description="\n".join(lines), color=0xEF4444)
-            await interaction.response.send_message(embed=em, ephemeral=True)
 
     @app_commands.command(name="dismantle", description="Dismantle (disenchant) a girl into coins")
     @app_commands.describe(girl_id="Girl UID to dismantle", confirm="Confirm dismantle")

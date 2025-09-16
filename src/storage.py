@@ -158,6 +158,7 @@ def _make_girl_from_catalog_entry(base: dict, counter: int) -> Girl:
     g.normalize_skill_structs()
     g.health = g.health_max
     g.stamina = g.stamina_max
+    g.lust = g.lust_max
     return g
 
 def grant_starter_pack(uid: int) -> Player:
@@ -304,9 +305,14 @@ def evaluate_job(girl: Girl, job: Job) -> dict:
 
     stamina_ratio = girl.stamina / girl.stamina_max if girl.stamina_max else 0
     health_ratio = girl.health / girl.health_max if girl.health_max else 0
+    lust_ratio = girl.lust / girl.lust_max if girl.lust_max else 0
 
     diff_main = main_lvl - job.demand_level
     diff_sub = sub_lvl - sub_need
+
+    lust_cost_base = 9 + job.difficulty * 3
+    lust_cost = int(max(4, lust_cost_base - max(0, girl.lust_level - 1)))
+    lust_ok = girl.lust >= lust_cost
 
     success_chance = 0.55
     success_chance += diff_main * 0.08
@@ -314,8 +320,11 @@ def evaluate_job(girl: Girl, job: Job) -> dict:
     success_chance += (stamina_ratio - 0.5) * 0.25
     success_chance += (health_ratio - 0.5) * 0.20
     success_chance += max(0, girl.endurance_level - 1) * 0.03
+    success_chance += (lust_ratio - 0.5) * 0.28
+    if lust_ratio < 0.3:
+        success_chance -= (0.3 - lust_ratio) * 0.35
     success_chance -= (job.difficulty - 1) * 0.08
-    success_chance = max(0.05, min(0.95, success_chance))
+    success_chance = max(0.05, min(0.97, success_chance))
 
     reward_multiplier = 1.0
     reward_multiplier += diff_main * 0.06
@@ -324,7 +333,10 @@ def evaluate_job(girl: Girl, job: Job) -> dict:
     reward_multiplier += max(0, girl.endurance_level - 1) * 0.04
     reward_multiplier += (stamina_ratio - 0.7) * 0.15
     reward_multiplier += (health_ratio - 0.7) * 0.12
-    reward_multiplier = max(0.5, min(1.8, reward_multiplier))
+    reward_multiplier += (lust_ratio - 0.6) * 0.32
+    if lust_ratio > 0.85:
+        reward_multiplier += (lust_ratio - 0.85) * 0.14
+    reward_multiplier = max(0.45, min(2.2, reward_multiplier))
 
     injury_base = 0.12 + (job.difficulty - 1) * 0.08
     injury_base -= diff_main * 0.025
@@ -332,7 +344,12 @@ def evaluate_job(girl: Girl, job: Job) -> dict:
     injury_base -= max(0, girl.endurance_level - 1) * 0.03
     injury_base -= stamina_ratio * 0.12
     injury_base -= health_ratio * 0.10
-    injury_chance = max(0.05, min(0.6, injury_base))
+    injury_base -= (lust_ratio - 0.5) * 0.12
+    if lust_ratio < 0.25:
+        injury_base += (0.25 - lust_ratio) * 0.28
+    if lust_ratio > 0.9:
+        injury_base += (lust_ratio - 0.9) * 0.35
+    injury_chance = max(0.05, min(0.7, injury_base))
 
     injury_min = max(5, 8 + job.difficulty * 4 - max(0, diff_main) * 2)
     injury_max = max(injury_min + 2, 18 + job.difficulty * 6 - max(0, diff_main + diff_sub) * 2)
@@ -344,7 +361,15 @@ def evaluate_job(girl: Girl, job: Job) -> dict:
 
     health_ok = girl.health > 0
     stamina_ok = girl.stamina >= stamina_cost
-    can_attempt = (not blocked_main and not blocked_sub and meets_main and meets_sub and health_ok and stamina_ok)
+    can_attempt = (
+        not blocked_main
+        and not blocked_sub
+        and meets_main
+        and meets_sub
+        and health_ok
+        and stamina_ok
+        and lust_ok
+    )
 
     return {
         "main_lvl": main_lvl,
@@ -355,10 +380,13 @@ def evaluate_job(girl: Girl, job: Job) -> dict:
         "meets_sub": meets_sub,
         "health_ok": health_ok,
         "stamina_ok": stamina_ok,
+        "lust_ok": lust_ok,
         "can_attempt": can_attempt,
         "stamina_cost": stamina_cost,
         "stamina_ratio": stamina_ratio,
         "health_ratio": health_ratio,
+        "lust_cost": lust_cost,
+        "lust_ratio": lust_ratio,
         "success_chance": success_chance,
         "reward_multiplier": reward_multiplier,
         "injury_chance": injury_chance,
@@ -392,6 +420,16 @@ def resolve_job(pl: Player, job: Job, girl: Girl) -> dict:
         return {"ok": False, "reason": "Girl is injured", "reward": 0}
     if girl.stamina < STA_COST:
         return {"ok": False, "reason": "Not enough stamina", "reward": 0}
+    if not info["lust_ok"]:
+        return {
+            "ok": False,
+            "reason": "Not aroused enough",
+            "reward": 0,
+            "success_chance": info["success_chance"],
+            "injury_chance": info["injury_chance"],
+            "stamina_cost": STA_COST,
+            "lust_cost": info["lust_cost"],
+        }
 
     # Preference-based refusal
     if info["blocked_main"]:
@@ -417,6 +455,8 @@ def resolve_job(pl: Player, job: Job, girl: Girl) -> dict:
     # Consume stamina
     girl.stamina = max(0, girl.stamina - STA_COST)
     girl.stamina_last_ts = int(time.time())
+
+    lust_before = girl.lust
 
     # Determine outcome chances
     success_roll = random.random()
@@ -479,6 +519,23 @@ def resolve_job(pl: Player, job: Job, girl: Girl) -> dict:
         girl.health = max(0, girl.health - injury_amount)
         injured = injury_amount > 0
 
+    # Lust consumption + XP progression
+    lust_cost = info["lust_cost"]
+    if success:
+        lust_spent = min(lust_before, max(1, int(lust_cost * 1.0)))
+    else:
+        lust_spent = min(lust_before, max(1, lust_cost // 2))
+    girl.lust = max(0, girl.lust - lust_spent)
+    girl.lust_last_ts = int(time.time())
+
+    lust_xp_gain = 4 + job.difficulty * (3 if success else 2)
+    lust_xp_gain += int(info["lust_ratio"] * 5)
+    if success and reward_multiplier >= 1.1:
+        lust_xp_gain += 2
+    if injured:
+        lust_xp_gain = max(2, lust_xp_gain - 1)
+    girl.gain_lust_xp(lust_xp_gain)
+
     # Stat XP progression for vitality/endurance
     endurance_xp_gain = max(1, int(STA_COST * (1.1 if success else 0.7)) + job.difficulty * (3 if success else 2))
     girl.gain_endurance_xp(endurance_xp_gain)
@@ -498,6 +555,11 @@ def resolve_job(pl: Player, job: Job, girl: Girl) -> dict:
         "injury_amount": injury_amount,
         "stamina_cost": STA_COST,
         "reward_multiplier": reward_multiplier,
+        "lust_cost": lust_spent,
+        "lust_before": lust_before,
+        "lust_after": girl.lust,
+        "lust_after_ratio": girl.lust / girl.lust_max if girl.lust_max else 0.0,
+        "lust_ratio_before": info["lust_ratio"],
     }
 
 # -----------------------------------------------------------------------------

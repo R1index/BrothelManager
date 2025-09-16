@@ -169,11 +169,16 @@ class Girl(BaseModel):
     health_max: int = 100
     stamina: int = 100
     stamina_max: int = 100
+    lust: int = 80
+    lust_max: int = 100
     vitality_level: int = 1
     vitality_xp: int = 0
     endurance_level: int = 1
     endurance_xp: int = 0
+    lust_level: int = 1
+    lust_xp: int = 0
     stamina_last_ts: int = Field(default_factory=now_ts)
+    lust_last_ts: int = Field(default_factory=now_ts)
 
     # Skills (canonical structure)
     skills: Dict[str, Dict[str, int]]    = Field(default_factory=lambda: {k: {"level": 0, "xp": 0} for k in MAIN_SKILLS})
@@ -203,6 +208,14 @@ class Girl(BaseModel):
             self.stamina_last_ts,
             self.stamina_max,
             per_tick=self.stamina_regen_per_tick(),
+        )
+        # lust drifts upward while resting
+        self.lust, self.lust_last_ts = regen_stamina(
+            self.lust,
+            self.lust_last_ts,
+            self.lust_max,
+            per_tick=self.lust_regen_per_tick(),
+            tick_seconds=600,
         )
         # pregnancy auto-progress + auto-clear at full term
         if self.pregnant and self.pregnant_since_ts:
@@ -237,31 +250,47 @@ class Girl(BaseModel):
             self.vitality_level = 1
         if self.endurance_level <= 0:
             self.endurance_level = 1
+        if self.lust_level <= 0:
+            self.lust_level = 1
         self.vitality_xp = max(0, int(self.vitality_xp))
         self.endurance_xp = max(0, int(self.endurance_xp))
+        self.lust_xp = max(0, int(self.lust_xp))
         if self.health_max <= 0:
             self.health_max = 100
         if self.stamina_max <= 0:
             self.stamina_max = 100
+        if self.lust_max <= 0:
+            self.lust_max = 80
         if self.health < 0:
             self.health = 0
         if self.stamina < 0:
             self.stamina = 0
+        if self.lust < 0:
+            self.lust = 0
         self.recalc_limits()
         # Clamp current pools to their caps
         self.health = min(max(0, self.health), self.health_max)
         self.stamina = min(max(0, self.stamina), self.stamina_max)
+        self.lust = min(max(0, self.lust), self.lust_max)
+        if self.lust_last_ts <= 0:
+            self.lust_last_ts = now_ts()
 
     def recalc_limits(self):
         """Recalculate max health/stamina from progression stats."""
         base_hp = 100 + (self.level - 1) * 6 + (self.vitality_level - 1) * 18
         base_sta = 100 + (self.level - 1) * 4 + (self.endurance_level - 1) * 15
+        base_lust = 80 + (self.level - 1) * 5 + (self.lust_level - 1) * 14
         self.health_max = max(60, int(base_hp))
         self.stamina_max = max(60, int(base_sta))
+        self.lust_max = max(40, int(base_lust))
 
     def stamina_regen_per_tick(self) -> float:
         """Stamina regen modifier depending on endurance."""
         return 1.0 + max(0, self.endurance_level - 1) * 0.25
+
+    def lust_regen_per_tick(self) -> float:
+        """Natural lust build-up while resting."""
+        return 1.6 + max(0, self.lust_level - 1) * 0.35
 
     def gain_vitality_xp(self, amount: int):
         amount = max(0, int(amount))
@@ -284,6 +313,17 @@ class Girl(BaseModel):
             self.endurance_level += 1
         self.recalc_limits()
         self.stamina = min(self.stamina, self.stamina_max)
+
+    def gain_lust_xp(self, amount: int):
+        amount = max(0, int(amount))
+        if amount <= 0:
+            return
+        self.lust_xp += amount
+        while self.lust_level < 9999 and self.lust_xp >= stat_xp_threshold(self.lust_level):
+            self.lust_xp -= stat_xp_threshold(self.lust_level)
+            self.lust_level += 1
+        self.recalc_limits()
+        self.lust = min(self.lust, self.lust_max)
 
 class Job(BaseModel):
     # Future: multiple sub-skill demands
