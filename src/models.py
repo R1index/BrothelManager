@@ -15,6 +15,8 @@ BROTHEL_FACILITY_NAMES: Tuple[str, ...] = ("comfort", "hygiene", "security", "al
 RARITY_WEIGHTS = {"R": 70, "SR": 20, "SSR": 9, "UR": 1}
 RARITY_COLORS  = {"R": 0x9fa6b2, "SR": 0x60a5fa, "SSR": 0xf59e0b, "UR": 0x8b5cf6}
 
+PROMOTE_COINS_PER_RENOWN = 5
+
 # Preferences for skills/subskills
 PREF_OPEN    = "true"   # open for training
 PREF_BLOCKED = "false"  # blocked (girl refuses jobs using it)
@@ -623,7 +625,7 @@ class BrothelState(BaseModel):
         coins = max(0, int(coins))
         if coins <= 0:
             return {"renown": 0, "morale": 0}
-        gained = min(500 - self.renown, max(1, coins // 5))
+        gained = min(500 - self.renown, coins // PROMOTE_COINS_PER_RENOWN)
         morale = min(100 - self.morale, max(0, coins // 18))
         self.renown += gained
         self.morale += morale

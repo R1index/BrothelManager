@@ -26,6 +26,7 @@ from ..models import (
     SUB_SKILLS,
     PREF_BLOCKED,
     RARITY_COLORS,
+    PROMOTE_COINS_PER_RENOWN,
     make_bar,
     market_level_from_rep,
 )
@@ -304,10 +305,22 @@ class Core(commands.Cog):
                     f"{EMOJI_COIN} Used {result['pool_used']} from upkeep reserve."
                 )
         elif action_val == "promote":
+            prev_renown = brothel.renown
             result = brothel.promote(invest)
-            notes.append(
-                f"{EMOJI_POPULARITY} Renown +{result['renown']} (now {brothel.renown})."
-            )
+            renown_gain = result.get("renown", 0)
+            if renown_gain > 0:
+                notes.append(
+                    f"{EMOJI_POPULARITY} Renown +{renown_gain} (now {brothel.renown})."
+                )
+            elif prev_renown >= 500:
+                notes.append(
+                    f"{EMOJI_POPULARITY} Renown is already maxed at {brothel.renown}."
+                )
+            else:
+                notes.append(
+                    f"{EMOJI_POPULARITY} Investment too small to gain renown. Spend at least "
+                    f"{PROMOTE_COINS_PER_RENOWN} coins for +1."
+                )
             if result.get("morale"):
                 notes.append(
                     f"{EMOJI_MORALE} Morale +{result['morale']} (now {brothel.morale}/100)."
