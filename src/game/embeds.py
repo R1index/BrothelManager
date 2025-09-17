@@ -73,7 +73,18 @@ def brothel_facility_lines(brothel: BrothelState) -> list[str]:
         icon, label = FACILITY_INFO[key]
         lvl, xp, need = brothel.facility_progress(key)
         bar = make_bar(xp, need, length=8)
-        lines.append(f"{icon} {label} L{lvl} [{bar}] {xp}/{need}")
+        line = f"{icon} {label} L{lvl} [{bar}] {xp}/{need}"
+        if key == "hygiene":
+            decay_reduction = int(round(brothel.hygiene_reduction_ratio() * 100))
+            upkeep_bonus = int(round((brothel.hygiene_restoration_multiplier() - 1.0) * 100))
+            extras: list[str] = []
+            if decay_reduction > 0:
+                extras.append(f"-{decay_reduction}% decay")
+            if upkeep_bonus > 0:
+                extras.append(f"+{upkeep_bonus}% upkeep")
+            if extras:
+                line = f"{line} • {' / '.join(extras)}"
+        lines.append(line)
     return lines
 
 
