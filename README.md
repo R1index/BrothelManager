@@ -93,12 +93,14 @@ BrothelManager/
 │   │   └── core.py        # Игровые команды, фоновые задачи и обработка действий
 │   └── game/
 │       ├── __init__.py    # Пакет с ленивым экспортом сервисов и презентационных модулей
+│       ├── balance.py     # Параметры баланса и утилиты мерджа с config.json
 │       ├── constants.py   # Эмодзи, подписи и другие константы оформления
 │       ├── embeds.py      # Формирование Discord Embed для профилей и борделей
 │       ├── repository.py  # `DataStore`: файловое хранилище игроков/рынков
 │       ├── services.py    # `GameService`: игровая логика гачи, рынка и прогрессии
 │       ├── utils.py       # Утилиты выбора опций и расчёта состояния страсти
 │       └── views.py       # UI-компоненты Discord (пагинатор, рынок работ)
+├── tests/                 # Набор pytest-тестов для проверки ключевых сценариев
 ├── config.json            # Конфигурация бота и игровых параметров
 ├── requirements.txt       # Список зависимостей проекта
 └── README.md              # Документация
@@ -108,17 +110,77 @@ BrothelManager/
 
 | Путь | Назначение | Основные элементы |
 | --- | --- | --- |
-| `src/bot.py` | Собирает `commands.Bot`, загружает коги и синхронизирует slash-команды. | `load_config()`, `main()`, `setup_hook` с загрузкой `core` и `admin`. |
-| `src/cogs/core.py` | Главный ког с игровыми slash-командами, листингами и обработкой заданий. | Класс `Core`, фоновая задача `market_refresher`, генерация Embed и UI. |
-| `src/cogs/admin.py` | Администрирование бота. | Класс `Admin`, команды `/sync` и `/invite`. |
-| `src/models.py` | Доменные сущности и формулы роста. | Классы `Player`, `Girl`, `BrothelState`, утилиты опыта (`make_bar`, `skill_xp_threshold`). |
-| `src/storage.py` | Адаптер между старыми вызовами и новой архитектурой. | Глобальные экземпляры `DataStore`/`GameService`, функции `load_player`, `roll_gacha`, `brothel_leaderboard`. |
-| `src/game/repository.py` | Работа с файловой структурой данных. | Класс `DataStore`, методы `user_path()`, `iter_user_ids()`, `load_catalog()`. |
-| `src/game/balance.py` | Центральные параметры баланса. | Датаклассы весов, загрузка настроек из `config.json`. |
-| `src/game/services.py` | Основная игровая логика и правила. | Класс `GameService`, методы генерации гачи, рынка, расчёта наград и наставничества. |
-| `src/game/embeds.py` | Представление данных в Discord. | Функции `build_brothel_embed`, `build_girl_embed`, `brothel_facility_lines`. |
-| `src/game/views.py` | Интерактивные Discord View. | `Paginator`, `MarketWorkView` с обработкой выбора девушек и заданий. |
-| `src/assets_util.py` | Определение путей до локальных изображений. | `profile_image_path()`, `action_image_path()`, `pregnant_profile_image_path()`. |
+| `src/bot.py` | Собирает `commands.Bot`, загружает коги и синхронизирует slash-команды. | `load_config()`, `main()`, обработчик `on_ready`, `setup_hook` с регистрацией команд и выводом ссылки-приглашения. |
+| `src/cogs/core.py` | Главный ког с игровыми slash-командами, листингами и обработкой заданий. | Класс `Core`, фоновые задачи (`market_refresher`), генерация Embed, показ топов через `TopLeaderboardView`, запуск `MarketWorkView`. |
+| `src/cogs/admin.py` | Администрирование бота. | Класс `Admin`, slash-команды `/sync` и `/invite`, вспомогательный `_sync_commands()` с обработкой ошибок конфигурации. |
+| `src/models.py` | Доменные сущности и формулы роста. | Классы `Girl`, `Market`, `Job`, `BrothelState`, `Player`, утилиты `regen_stamina()`, `make_bar()`, расчёт порогов опыта. |
+| `src/storage.py` | Адаптер между старым интерфейсом и сервисами. | Глобальные `DataStore`/`GameService`, функции `load_player()`, `generate_market()`, `brothel_leaderboard()`, доступ к конфигу. |
+| `src/game/__init__.py` | Упрощает импорты игровых сервисов и представлений. | Экспорт `GameService`, `DataStore`, ленивые модули `constants`, `utils`, `embeds`, `views`. |
+| `src/game/balance.py` | Центральные параметры баланса и их переопределение конфигом. | Датаклассы `CostBalance`, `SuccessBalance`, `RewardBalance`, `InjuryBalance`, `MarketBalance`, загрузка профиля через `load_balance_profile()`. |
+| `src/game/constants.py` | Константы оформления и текстовых блоков. | Наборы `EMOJI_*`, `SKILL_ICONS`, `SUB_SKILL_ICONS`, `FACILITY_INFO`, `PREF_ICONS`, разделитель `EMBED_SPACER`. |
+| `src/game/repository.py` | Работа с файловой структурой данных. | Класс `DataStore`, настройка путей из конфига, чтение/запись JSON, методы `user_path()`, `iter_user_ids()`, `load_catalog()`. |
+| `src/game/services.py` | Основная игровая логика и правила. | Класс `GameService`, кэширование конфигурации/баланса, методы `grant_starter_pack()`, `generate_market()`, `gather_brothel_top()`, `gather_girl_top()`. |
+| `src/game/embeds.py` | Представление данных в Discord. | `build_brothel_embed()`, `build_girl_embed()`, `brothel_facility_lines()`, `format_training_lines()`, прогресс-бар статов. |
+| `src/game/utils.py` | Общие утилиты и вычисления. | `choice_value()`, `lust_state_label()`, `lust_state_icon()`, `preference_icon()`. |
+| `src/game/views.py` | Интерактивные Discord View. | `Paginator` с вложениями, `MarketWorkView` (выбор девушки/работы, запуск `resolve_job()`), `TopLeaderboardView` для интерактивных топов. |
+| `src/assets_util.py` | Определение путей до локальных изображений. | Управление базовым каталогом (`set_assets_dir()`), `profile_image_path()`, `action_image_path()`, `pregnant_profile_image_path()`. |
+
+#### Детализация каталога `src/`
+
+- `bot.py`
+  - Загружает конфигурацию, проверяет наличие токена и настраивает `discord.Intents` перед запуском.
+  - Определяет `setup_hook()` с загрузкой когов `src.cogs.core` и `src.cogs.admin`, синхронизирует slash-команды глобально или в указанной гильдии.
+  - В `on_ready()` выводит ссылку-приглашение и базовые сведения о боте.
+- `assets_util.py`
+  - Управляет базовым каталогом ассетов через `set_assets_dir()`/`get_assets_dir()`.
+  - Формирует пути к изображениям профиля, действий и беременной версии девушек (`profile_image_path()`, `action_image_path()`, `pregnant_profile_image_path()`).
+- `models.py`
+  - Содержит константы навыков и предпочтений, коэффициенты редкости и утилиты восстановления (`regen_stamina()`).
+  - Описывает pydantic-модели `Girl`, `BrothelState`, `Market`, `Job`, `Player` с методами нормализации (`normalize_skill_structs()`, `ensure_brothel()`).
+  - Включает функции расчёта порогов опыта и прогресс-баров (`normalize_skill_map()`, `skill_xp_threshold()`, `facility_xp_threshold()`, `make_bar()`).
+- `storage.py`
+  - Создаёт глобальные экземпляры `DataStore` и `GameService`, предоставляя тонкий фасад для вызовов из когов.
+  - Экспортирует функции загрузки/сохранения игроков и рынков (`load_player()`, `save_player()`, `refresh_market_if_stale()`), генерации заданий (`generate_market()`), получения топов (`brothel_leaderboard()`, `girl_leaderboard()`), доступа к конфигу (`get_config()`).
+- `cogs/`
+  - `core.py`
+    - Класс `Core` регистрирует slash-команды (`/start`, `/profile`, `/gacha`, `/market`, `/brothel`, `/train`, `/heal`, `/top`, `/girls`, `/dismantle`) и запускает фоновые задачи (`market_refresher`).
+    - Методы `_brothel_status_notes()`, `_build_brothel_embed()`, `_send_response()` и `_save_and_respond()` добавляют подсказки игроку и управляют ответами.
+    - Интегрирует `MarketWorkView`, `TopLeaderboardView` и `Paginator` для интерактивного взаимодействия с пользователем.
+  - `admin.py`
+    - Slash-команды `/sync` и `/invite`, проверка владельца приложения перед синхронизацией.
+    - `load_cfg()` и `_sync_commands()` читают `config.json`, поддерживают вложенный `discord.guild_id` и сообщают о причинах отката к глобальной синхронизации.
+- `game/`
+  - `__init__.py`
+    - Экспортирует `DataStore`, `GameService` и ленивые подпакеты `constants`, `utils`, `embeds`, `views` через `__getattr__()`.
+  - `balance.py`
+    - Определяет `@dataclass`-структуры `CostBalance`, `SuccessBalance`, `RewardBalance`, `InjuryBalance`, `MarketBalance`.
+    - Функции `_coerce_scalar()`, `_merge_dataclass()` и `load_balance_profile()` применяют частичные переопределения параметров из конфигурации.
+  - `constants.py`
+    - Содержит эмодзи оформления, карты иконок навыков и саб-скиллов, `FACILITY_INFO` и `PREF_ICONS`, а также пробел `EMBED_SPACER` для выравнивания Embed.
+  - `embeds.py`
+    - `build_brothel_embed()` и `build_girl_embed()` формируют Discord Embed с прогрессом, наградами и характеристиками.
+    - Дополнительные функции (`brothel_overview_lines()`, `brothel_facility_lines()`, `format_training_lines()`, `_format_skill_lines()`) создают строки прогресса и отображают предпочтения через `preference_icon()`.
+  - `repository.py`
+    - Класс `DataStore` управляет путями `data/`, `users/`, `markets/`, каталога девушек и ассетов, поддерживает переопределения через `configure_paths()`.
+    - Предоставляет операции `read_json()`, `write_json()`, `user_path()`, `market_path()`, `load_catalog()`, `iter_user_ids()`.
+  - `services.py`
+    - `GameService` кэширует конфиг и баланс, подготавливает каталоги данных, настраивает директорию ассетов.
+    - Реализует выдачу стартового набора (`grant_starter_pack()`), гачу (`roll_gacha()`), генерацию и обновление рынков (`generate_market()`, `refresh_market_if_stale()`), расчёт и проведение заданий (`evaluate_job()`, `resolve_job()`).
+    - Собирает лидерборды (`gather_brothel_top()`, `gather_girl_top()`), управляет наставничеством и состоянием девушек.
+  - `utils.py`
+    - Утилиты извлечения значений (`choice_value()`), отображения состояния страсти (`lust_state_label()`, `lust_state_icon()`), подстановки иконок предпочтений (`preference_icon()`).
+  - `views.py`
+    - `Paginator` листает Embed с привязкой к инициатору и поддержкой файловых вложений.
+    - `MarketWorkView` управляет выбором девушки и работы, подгружает рынок (`refresh_market_if_stale()`), вызывает `resolve_job()`, сохраняет прогресс и выводит результат.
+    - `TopLeaderboardView` позволяет просматривать подробности записей топа (бордели, девушки) и возвращаться к сводному Embed.
+
+#### Тесты
+
+- `tests/test_core.py` — проверяет основные slash-команды, корректность формирования Embed и отклика кода при ошибках валидации.
+- `tests/test_gacha.py` — покрывает сценарии прокруток, расход монет и получение наград/девушек.
+- `tests/test_game_service.py` — концентрируется на бизнес-логике `GameService`: рынок заданий, апгрейды и расчёт наград.
+- `tests/test_models.py` — тесты pydantic-моделей и формул прогрессии (`skill_xp_threshold`, генерация прогресс-баров).
+- `tests/test_views.py` — проверяет Discord View (пагинацию, выбор заданий, реакции на интеракции).
 
 ### Разработка
 
