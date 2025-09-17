@@ -477,7 +477,7 @@ class BrothelState(BaseModel):
 
         self.cleanliness = min(100, max(0, int(self.cleanliness)))
         self.morale = min(100, max(10, int(self.morale)))
-        self.renown = min(500, max(0, int(self.renown)))
+        self.renown = max(0, int(self.renown))
         self.rooms = max(1, int(self.rooms))
         self.upkeep_pool = min(10000, max(0, int(self.upkeep_pool)))
         self.room_progress = max(0, int(self.room_progress))
@@ -572,7 +572,7 @@ class BrothelState(BaseModel):
         if self.cleanliness < 50:
             self.renown = max(0, self.renown - max(1, decay // 3))
         else:
-            self.renown = min(500, self.renown + int(decay // 5))
+            self.renown += int(decay // 5)
 
         remainder = elapsed % 900
         self.last_tick_ts = now - remainder
@@ -625,7 +625,7 @@ class BrothelState(BaseModel):
         coins = max(0, int(coins))
         if coins <= 0:
             return {"renown": 0, "morale": 0}
-        gained = min(500 - self.renown, coins // PROMOTE_COINS_PER_RENOWN)
+        gained = max(0, coins // PROMOTE_COINS_PER_RENOWN)
         morale = min(100 - self.morale, max(0, coins // 18))
         self.renown += gained
         self.morale += morale

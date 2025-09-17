@@ -736,7 +736,7 @@ class GameService:
             renown_delta += 6 + job.difficulty * 2
         else:
             renown_delta -= max(1, 2 + job.difficulty)
-        player.renown = max(0, min(500, player.renown + renown_delta))
+        player.renown = max(0, player.renown + renown_delta)
         brothel.renown = player.renown
 
         if sub_name == "VAGINAL" and not girl.pregnant:
@@ -827,7 +827,7 @@ class GameService:
         player.girls = [g for g in player.girls if g.uid != girl_uid]
 
         renown_gain_by_rarity = {"R": 1, "SR": 2, "SSR": 4, "UR": 6}
-        player.renown = max(0, min(500, player.renown + renown_gain_by_rarity.get(girl.rarity, 1)))
+        player.renown = max(0, player.renown + renown_gain_by_rarity.get(girl.rarity, 1))
         brothel.renown = player.renown
 
         return {
