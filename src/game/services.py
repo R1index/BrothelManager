@@ -8,6 +8,7 @@ import time
 from typing import Iterable, List, Optional, Tuple
 
 from .repository import DataStore
+from .balance import BalanceProfile, load_balance_profile
 from ..models import (
     Player,
     Girl,
@@ -34,6 +35,7 @@ class GameService:
     def __init__(self, store: DataStore | None = None):
         self.store = store or DataStore()
         self._config_cache: dict | None = None
+        self._balance_cache: BalanceProfile | None = None
 
     def _load_config(self) -> dict:
         from .. import assets_util
@@ -57,6 +59,7 @@ class GameService:
         assets_util.set_assets_dir(self.store.assets_dir)
 
         self._config_cache = data
+        self._balance_cache = None
         return self._config_cache
 
     def get_config(self) -> dict:
@@ -65,6 +68,14 @@ class GameService:
     @property
     def config(self) -> dict:
         return self._load_config()
+
+    def get_balance_profile(self) -> BalanceProfile:
+        if self._balance_cache is None:
+            config = self._load_config()
+            balance_cfg = config.get("balance") if isinstance(config, dict) else None
+            mapping = balance_cfg if isinstance(balance_cfg, dict) else None
+            self._balance_cache = load_balance_profile(mapping)
+        return self._balance_cache
 
     def _starter_girl_from_config(self, entries: List[dict]) -> Optional[dict]:
         config = self._load_config()
@@ -397,6 +408,8 @@ class GameService:
         renown = player.renown if player else 0
         level = forced_level if forced_level is not None else market_level_from_rep(renown)
 
+        balance = self.get_balance_profile()
+
         facility_influence = 0
         if brothel:
             facility_influence = (
@@ -427,16 +440,31 @@ class GameService:
             demand_level = random.randint(0, max(1, level + 1))
             demand_sub = random.choice(SUB_SKILLS)
             demand_sub_level = random.randint(0, max(1, level + 1))
-            pay = 60 + demand_level * 22 + demand_sub_level * 18 + level * 12
+            market_balance = balance.market
+            pay = (
+                market_balance.base_pay
+                + demand_level * market_balance.main_step
+                + demand_sub_level * market_balance.sub_step
+                + level * market_balance.level_step
+            )
             max_difficulty = max(0, level)
             allure_rolls = 1
             if brothel:
-                pay += brothel.allure_level * 18
-                pay += brothel.facility_level("comfort") * 10
-                pay += brothel.facility_level("security") * 6
-                pay += max(-30, int((brothel.cleanliness - 65) * 0.9))
-                pay += brothel.renown // 4
+                pay += brothel.allure_level * market_balance.allure_bonus
+                pay += brothel.facility_level("comfort") * market_balance.comfort_bonus
+                pay += brothel.facility_level("security") * market_balance.security_bonus
+                cleanliness_shift = int(
+                    (brothel.cleanliness - market_balance.cleanliness_baseline)
+                    * market_balance.cleanliness_weight
+                )
+                cleanliness_shift = max(
+                    market_balance.cleanliness_min_bonus,
+                    min(market_balance.cleanliness_max_bonus, cleanliness_shift),
+                )
+                pay += cleanliness_shift
+                pay += brothel.renown // max(1, market_balance.renown_divisor)
                 allure_rolls = max(1, 1 + brothel.facility_level("allure") // 3)
+            pay = max(market_balance.min_pay, min(market_balance.max_pay, pay))
             difficulty = 0
             for _ in range(allure_rolls):
                 roll = random.randint(0, max_difficulty)
@@ -496,8 +524,11 @@ class GameService:
         meets_main = main_lvl >= job.demand_level
         meets_sub = (sub_lvl >= sub_need) if sub_name else True
 
-        stamina_cost_base = 12 + job.difficulty * 4
-        stamina_cost = int(max(6, stamina_cost_base - max(0, girl.endurance_level - 1) * 2))
+        balance = self.get_balance_profile()
+        costs = balance.costs
+        stamina_cost_base = costs.stamina_base + job.difficulty * costs.stamina_per_difficulty
+        stamina_discount = max(0.0, girl.endurance_level - 1) * costs.stamina_endurance_discount
+        stamina_cost = int(max(costs.stamina_min, stamina_cost_base - stamina_discount))
 
         stamina_ratio = girl.stamina / girl.stamina_max if girl.stamina_max else 0
         health_ratio = girl.health / girl.health_max if girl.health_max else 0
@@ -506,43 +537,47 @@ class GameService:
         diff_main = main_lvl - job.demand_level
         diff_sub = sub_lvl - sub_need
 
-        lust_cost_base = 9 + job.difficulty * 3
-        lust_cost = int(max(4, lust_cost_base - max(0, girl.lust_level - 1)))
+        lust_cost_base = costs.lust_base + job.difficulty * costs.lust_per_difficulty
+        lust_discount = max(0.0, girl.lust_level - 1) * costs.lust_level_discount
+        lust_cost = int(max(costs.lust_min, lust_cost_base - lust_discount))
         lust_ok = girl.lust >= lust_cost
 
-        success_chance = 0.55
-        success_chance += diff_main * 0.08
-        success_chance += diff_sub * 0.05
-        success_chance += (stamina_ratio - 0.5) * 0.25
-        success_chance += (health_ratio - 0.5) * 0.20
-        success_chance += max(0, girl.endurance_level - 1) * 0.03
-        success_chance += (lust_ratio - 0.5) * 0.28
-        if lust_ratio < 0.3:
-            success_chance -= (0.3 - lust_ratio) * 0.35
-        success_chance -= (job.difficulty - 1) * 0.08
+        success = balance.success
+        success_chance = success.base
+        success_chance += diff_main * success.main_weight
+        success_chance += diff_sub * success.sub_weight
+        success_chance += (stamina_ratio - success.stamina_midpoint) * success.stamina_weight
+        success_chance += (health_ratio - success.health_midpoint) * success.health_weight
+        success_chance += max(0, girl.endurance_level - 1) * success.endurance_weight
+        success_chance += (lust_ratio - success.lust_midpoint) * success.lust_weight
+        if lust_ratio < success.low_lust_threshold:
+            success_chance -= (success.low_lust_threshold - lust_ratio) * success.low_lust_penalty
+        success_chance -= (job.difficulty - 1) * success.difficulty_penalty
 
-        reward_multiplier = 1.0
-        reward_multiplier += diff_main * 0.06
-        reward_multiplier += diff_sub * 0.03
-        reward_multiplier += (girl.level - 1) * 0.02
-        reward_multiplier += max(0, girl.endurance_level - 1) * 0.04
-        reward_multiplier += (stamina_ratio - 0.7) * 0.15
-        reward_multiplier += (health_ratio - 0.7) * 0.12
-        reward_multiplier += (lust_ratio - 0.6) * 0.32
-        if lust_ratio > 0.85:
-            reward_multiplier += (lust_ratio - 0.85) * 0.14
+        reward = balance.reward
+        reward_multiplier = reward.base_multiplier
+        reward_multiplier += diff_main * reward.main_weight
+        reward_multiplier += diff_sub * reward.sub_weight
+        reward_multiplier += (girl.level - 1) * reward.level_weight
+        reward_multiplier += max(0, girl.endurance_level - 1) * reward.endurance_weight
+        reward_multiplier += (stamina_ratio - reward.stamina_midpoint) * reward.stamina_weight
+        reward_multiplier += (health_ratio - reward.health_midpoint) * reward.health_weight
+        reward_multiplier += (lust_ratio - reward.lust_midpoint) * reward.lust_weight
+        if lust_ratio > reward.high_lust_threshold:
+            reward_multiplier += (lust_ratio - reward.high_lust_threshold) * reward.high_lust_bonus
 
-        injury_base = 0.12 + (job.difficulty - 1) * 0.08
-        injury_base -= diff_main * 0.025
-        injury_base -= diff_sub * 0.015
-        injury_base -= max(0, girl.endurance_level - 1) * 0.03
-        injury_base -= stamina_ratio * 0.12
-        injury_base -= health_ratio * 0.10
-        injury_base -= (lust_ratio - 0.5) * 0.12
-        if lust_ratio < 0.25:
-            injury_base += (0.25 - lust_ratio) * 0.28
-        if lust_ratio > 0.9:
-            injury_base += (lust_ratio - 0.9) * 0.35
+        injury = balance.injury
+        injury_base = injury.base + (job.difficulty - 1) * injury.difficulty_weight
+        injury_base -= diff_main * injury.main_weight
+        injury_base -= diff_sub * injury.sub_weight
+        injury_base -= max(0, girl.endurance_level - 1) * injury.endurance_weight
+        injury_base -= (stamina_ratio - injury.stamina_midpoint) * injury.stamina_weight
+        injury_base -= (health_ratio - injury.health_midpoint) * injury.health_weight
+        injury_base -= (lust_ratio - injury.lust_midpoint) * injury.lust_weight
+        if lust_ratio < injury.low_lust_threshold:
+            injury_base += (injury.low_lust_threshold - lust_ratio) * injury.low_lust_penalty
+        if lust_ratio > injury.high_lust_threshold:
+            injury_base += (lust_ratio - injury.high_lust_threshold) * injury.high_lust_penalty
 
         if brothel:
             success_chance += brothel.success_bonus()
@@ -551,17 +586,32 @@ class GameService:
             lust_cost = max(1, int(lust_cost * brothel.lust_modifier()))
             lust_ok = girl.lust >= lust_cost
 
-        success_chance = max(0.05, min(0.97, success_chance))
-        reward_multiplier = max(0.45, min(2.5, reward_multiplier))
-        injury_chance = max(0.03, min(0.7, injury_base))
+        min_success, max_success = success.cap
+        success_chance = max(min_success, min(max_success, success_chance))
+        min_reward, max_reward = reward.cap
+        reward_multiplier = max(min_reward, min(max_reward, reward_multiplier))
+        min_injury, max_injury = injury.cap
+        injury_chance = max(min_injury, min(max_injury, injury_base))
 
-        injury_min = max(5, 8 + job.difficulty * 4 - max(0, diff_main) * 2)
-        injury_max = max(injury_min + 2, 18 + job.difficulty * 6 - max(0, diff_main + diff_sub) * 2)
+        injury_min = max(
+            injury.injury_min_base,
+            injury.injury_min_base
+            + job.difficulty * injury.injury_min_difficulty
+            - max(0, diff_main) * injury.injury_min_diff_reduction,
+        )
+        injury_max = max(
+            injury_min + 2,
+            injury.injury_max_base
+            + job.difficulty * injury.injury_max_difficulty
+            - max(0, diff_main + diff_sub) * injury.injury_max_diff_reduction,
+        )
 
-        base_reward = job.pay + max(0, girl.level - 1) * 5
-        base_reward += max(0, diff_main) * 10
-        if sub_name:
-            base_reward += max(0, diff_sub) * 10
+        base_reward = job.pay
+        base_reward += max(0, girl.level - 1) * reward.base_level_bonus
+        if diff_main > 0:
+            base_reward += diff_main * reward.base_main_bonus
+        if sub_name and diff_sub > 0:
+            base_reward += diff_sub * reward.base_sub_bonus
 
         health_ok = girl.health > 0
         stamina_ok = girl.stamina >= stamina_cost
