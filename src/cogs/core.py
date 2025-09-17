@@ -1459,7 +1459,7 @@ class BrothelManageView(discord.ui.View):
 
     class ActionSelect(discord.ui.Select):
         def __init__(self, parent: "BrothelManageView") -> None:
-            self.view: BrothelManageView
+            self.manager: "BrothelManageView" = parent
             options = [
                 discord.SelectOption(label=label, value=value)
                 for value, label in BrothelManageView.ACTION_LABELS.items()
@@ -1471,20 +1471,19 @@ class BrothelManageView(discord.ui.View):
                 options=options,
                 row=0,
             )
-            self.view = parent
 
         async def callback(self, interaction: discord.Interaction) -> None:
-            if not await self.view._check_owner(interaction):
+            if not await self.manager._check_owner(interaction):
                 return
-            self.view.selected_action = self.values[0]
-            if self.view.selected_action == "view":
-                self.view.invest_amount = 0
-            self.view._update_components()
-            await self.view._refresh(interaction)
+            self.manager.selected_action = self.values[0]
+            if self.manager.selected_action == "view":
+                self.manager.invest_amount = 0
+            self.manager._update_components()
+            await self.manager._refresh(interaction)
 
     class FacilitySelect(discord.ui.Select):
         def __init__(self, parent: "BrothelManageView") -> None:
-            self.view: BrothelManageView
+            self.manager: "BrothelManageView" = parent
             options = [
                 discord.SelectOption(label=f"{icon} {label}", value=key)
                 for key, (icon, label) in FACILITY_INFO.items()
@@ -1497,19 +1496,18 @@ class BrothelManageView(discord.ui.View):
                 disabled=True,
                 row=1,
             )
-            self.view = parent
 
         async def callback(self, interaction: discord.Interaction) -> None:
-            if not await self.view._check_owner(interaction):
+            if not await self.manager._check_owner(interaction):
                 return
-            self.view.selected_facility = self.values[0]
-            icon, label = FACILITY_INFO[self.view.selected_facility]
+            self.manager.selected_facility = self.values[0]
+            icon, label = FACILITY_INFO[self.manager.selected_facility]
             self.placeholder = f"{icon} {label}"
-            await self.view._refresh(interaction)
+            await self.manager._refresh(interaction)
 
     class CoinSelect(discord.ui.Select):
         def __init__(self, parent: "BrothelManageView") -> None:
-            self.view: BrothelManageView
+            self.manager: "BrothelManageView" = parent
             super().__init__(
                 placeholder="Select coins to invest",
                 min_values=1,
@@ -1518,24 +1516,23 @@ class BrothelManageView(discord.ui.View):
                 disabled=True,
                 row=2,
             )
-            self.view = parent
 
         def refresh_options(self) -> None:
-            self.options = self.view._build_coin_options()
+            self.options = self.manager._build_coin_options()
 
         async def callback(self, interaction: discord.Interaction) -> None:
-            if not await self.view._check_owner(interaction):
+            if not await self.manager._check_owner(interaction):
                 return
             try:
                 value = int(self.values[0])
             except ValueError:
                 value = 0
-            self.view.invest_amount = max(0, value)
-            if self.view.invest_amount > 0:
-                self.placeholder = f"{self.view.invest_amount} coins selected"
+            self.manager.invest_amount = max(0, value)
+            if self.manager.invest_amount > 0:
+                self.placeholder = f"{self.manager.invest_amount} coins selected"
             else:
                 self.placeholder = "No coins selected"
-            await self.view._refresh(interaction)
+            await self.manager._refresh(interaction)
 
     @discord.ui.button(label="Execute", style=discord.ButtonStyle.success, emoji="✅", row=3)
     async def execute_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
@@ -1773,7 +1770,7 @@ class TrainingManageView(discord.ui.View):
 
     class ActionSelect(discord.ui.Select):
         def __init__(self, parent: "TrainingManageView") -> None:
-            self.view: TrainingManageView
+            self.manager: "TrainingManageView" = parent
             options = [
                 discord.SelectOption(label=label, value=value)
                 for value, label in TrainingManageView.ACTION_LABELS.items()
@@ -1785,27 +1782,26 @@ class TrainingManageView(discord.ui.View):
                 options=options,
                 row=0,
             )
-            self.view = parent
 
         async def callback(self, interaction: discord.Interaction) -> None:
-            if not await self.view._check_owner(interaction):
+            if not await self.manager._check_owner(interaction):
                 return
-            self.view.current_action = self.values[0]
-            if self.view.current_action != "assign":
-                self.view.selected_mentor = None
-                self.view.selected_student = None
-                self.view.selected_focus_type = None
-                self.view.selected_focus_name = None
-            if self.view.current_action != "finish":
-                self.view.selected_assignment_uid = None
-            self.view._update_components()
-            await self.view._refresh(interaction)
+            self.manager.current_action = self.values[0]
+            if self.manager.current_action != "assign":
+                self.manager.selected_mentor = None
+                self.manager.selected_student = None
+                self.manager.selected_focus_type = None
+                self.manager.selected_focus_name = None
+            if self.manager.current_action != "finish":
+                self.manager.selected_assignment_uid = None
+            self.manager._update_components()
+            await self.manager._refresh(interaction)
 
     class MentorSelect(discord.ui.Select):
         EMPTY_OPTION = discord.SelectOption(label="No eligible girls", value="none")
 
         def __init__(self, parent: "TrainingManageView") -> None:
-            self.view: TrainingManageView
+            self.manager: "TrainingManageView" = parent
             options = parent._build_girl_options() or [self.EMPTY_OPTION]
             super().__init__(
                 placeholder="Select mentor",
@@ -1814,29 +1810,28 @@ class TrainingManageView(discord.ui.View):
                 options=options,
                 row=1,
             )
-            self.view = parent
 
         def refresh_options(self) -> None:
-            options = self.view._build_girl_options(exclude_uid=self.view.selected_student)
+            options = self.manager._build_girl_options(exclude_uid=self.manager.selected_student)
             self.options = options or [self.EMPTY_OPTION]
 
         async def callback(self, interaction: discord.Interaction) -> None:
-            if not await self.view._check_owner(interaction):
+            if not await self.manager._check_owner(interaction):
                 return
             value = self.values[0]
             if value == "none":
                 await interaction.response.send_message("No available mentors.", ephemeral=True)
                 return
-            self.view.selected_mentor = value
-            mentor_name = self.view._girl_name(self.view.selected_mentor) or "Mentor"
+            self.manager.selected_mentor = value
+            mentor_name = self.manager._girl_name(self.manager.selected_mentor) or "Mentor"
             self.placeholder = f"Mentor: {mentor_name}"
-            await self.view._refresh(interaction)
+            await self.manager._refresh(interaction)
 
     class StudentSelect(discord.ui.Select):
         EMPTY_OPTION = discord.SelectOption(label="No eligible girls", value="none")
 
         def __init__(self, parent: "TrainingManageView") -> None:
-            self.view: TrainingManageView
+            self.manager: "TrainingManageView" = parent
             options = parent._build_girl_options() or [self.EMPTY_OPTION]
             super().__init__(
                 placeholder="Select student",
@@ -1845,27 +1840,26 @@ class TrainingManageView(discord.ui.View):
                 options=options,
                 row=1,
             )
-            self.view = parent
 
         def refresh_options(self) -> None:
-            options = self.view._build_girl_options(exclude_uid=self.view.selected_mentor)
+            options = self.manager._build_girl_options(exclude_uid=self.manager.selected_mentor)
             self.options = options or [self.EMPTY_OPTION]
 
         async def callback(self, interaction: discord.Interaction) -> None:
-            if not await self.view._check_owner(interaction):
+            if not await self.manager._check_owner(interaction):
                 return
             value = self.values[0]
             if value == "none":
                 await interaction.response.send_message("No available students.", ephemeral=True)
                 return
-            self.view.selected_student = value
-            student_name = self.view._girl_name(self.view.selected_student) or "Student"
+            self.manager.selected_student = value
+            student_name = self.manager._girl_name(self.manager.selected_student) or "Student"
             self.placeholder = f"Student: {student_name}"
-            await self.view._refresh(interaction)
+            await self.manager._refresh(interaction)
 
     class FocusSelect(discord.ui.Select):
         def __init__(self, parent: "TrainingManageView") -> None:
-            self.view: TrainingManageView
+            self.manager: "TrainingManageView" = parent
             options = [
                 discord.SelectOption(label=f"Main • {name}", value=f"main:{name}")
                 for name in MAIN_SKILLS
@@ -1881,27 +1875,26 @@ class TrainingManageView(discord.ui.View):
                 row=2,
                 disabled=True,
             )
-            self.view = parent
 
         async def callback(self, interaction: discord.Interaction) -> None:
-            if not await self.view._check_owner(interaction):
+            if not await self.manager._check_owner(interaction):
                 return
             raw = self.values[0]
             kind, _, name = raw.partition(":")
-            self.view.selected_focus_type = kind or None
-            self.view.selected_focus_name = name or None
-            focus_text = self.view.cog._format_training_focus(
-                self.view.selected_focus_type,
-                self.view.selected_focus_name,
+            self.manager.selected_focus_type = kind or None
+            self.manager.selected_focus_name = name or None
+            focus_text = self.manager.cog._format_training_focus(
+                self.manager.selected_focus_type,
+                self.manager.selected_focus_name,
             )
             self.placeholder = f"Focus: {focus_text}"
-            await self.view._refresh(interaction)
+            await self.manager._refresh(interaction)
 
     class AssignmentSelect(discord.ui.Select):
         EMPTY_OPTION = discord.SelectOption(label="No active mentorships", value="none")
 
         def __init__(self, parent: "TrainingManageView") -> None:
-            self.view: TrainingManageView
+            self.manager: "TrainingManageView" = parent
             options = parent._build_assignment_options() or [self.EMPTY_OPTION]
             super().__init__(
                 placeholder="Select mentorship",
@@ -1911,19 +1904,21 @@ class TrainingManageView(discord.ui.View):
                 row=3,
                 disabled=True,
             )
-            self.view = parent
 
         async def callback(self, interaction: discord.Interaction) -> None:
-            if not await self.view._check_owner(interaction):
+            if not await self.manager._check_owner(interaction):
                 return
             value = self.values[0]
             if value == "none":
                 await interaction.response.send_message("No mentorships to finish.", ephemeral=True)
                 return
-            self.view.selected_assignment_uid = value
-            assignment_label = self.view._assignment_label(self.view.selected_assignment_uid) or "Mentorship"
+            self.manager.selected_assignment_uid = value
+            assignment_label = (
+                self.manager._assignment_label(self.manager.selected_assignment_uid)
+                or "Mentorship"
+            )
             self.placeholder = assignment_label[:100]
-            await self.view._refresh(interaction)
+            await self.manager._refresh(interaction)
 
     @discord.ui.button(label="Execute", style=discord.ButtonStyle.success, emoji="✅", row=4)
     async def execute_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
