@@ -2,7 +2,7 @@ import asyncio
 import unittest
 
 from src.game.views import MarketWorkView
-from src.models import Girl, Market, Player
+from src.models import Girl, Job, Market, Player
 
 
 class MarketWorkViewPaginationTests(unittest.TestCase):
@@ -76,6 +76,44 @@ class MarketWorkViewMentorshipTests(unittest.TestCase):
         self.assertIn("Mentor Girl", girl_option.description)
         self.assertIn("g777", girl_option.description)
         self.assertIn("+15%", girl_option.description)
+
+
+class MarketWorkViewResultFormattingTests(unittest.TestCase):
+    def setUp(self):
+        self.player = Player(user_id=789)
+        self.girl = Girl(uid="g999", base_id="base", name="Test Girl", rarity="R")
+        self.player.girls = [self.girl]
+        self.market = Market(user_id=789, jobs=[])
+
+        async def _create_view():
+            return MarketWorkView(
+                user_id=789,
+                invoker_id=789,
+                forced_level=None,
+                player=self.player,
+                market=self.market,
+            )
+
+        self.view = asyncio.run(_create_view())
+        self.job = Job(
+            job_id="job1",
+            demand_main="Human",
+            demand_level=1,
+            demand_sub="VAGINAL",
+            demand_sub_level=1,
+            pay=100,
+            difficulty=1,
+        )
+
+    def test_rejected_job_shows_reason_without_resource_requirements(self):
+        result = {"ok": False, "reason": "Girl is pregnant", "reward": 0}
+
+        lines = self.view._format_result_lines(result, self.girl, self.job)
+
+        combined = "\n".join(lines)
+        self.assertIn("Girl is pregnant", combined)
+        self.assertIn("No resources spent", combined)
+        self.assertNotIn("Needs 0", combined)
 
 
 if __name__ == "__main__":

@@ -554,8 +554,8 @@ class MarketWorkView(discord.ui.View):
     def _format_result_lines(self, result: dict, girl, job) -> list[str]:
         chance_pct = int(round(result.get("success_chance", 0.0) * 100))
         injury_pct = int(round(result.get("injury_chance", 0.0) * 100))
-        stamina_cost = result.get("stamina_cost", 0)
-        lust_cost = result.get("lust_cost", 0)
+        stamina_cost = result.get("stamina_cost")
+        lust_cost = result.get("lust_cost")
         lust_after = result.get("lust_after", girl.lust)
         after_ratio = result.get("lust_after_ratio", girl.lust / girl.lust_max if girl.lust_max else 0.0)
         mood_after = lust_state_label(after_ratio)
@@ -574,10 +574,20 @@ class MarketWorkView(discord.ui.View):
         if chance_pct or injury_pct:
             lines.append(f"🎯 {chance_pct}% • 🩹 {injury_pct}% chance")
 
-        if result.get("lust_before") is None:
-            lines.append(f"⚡ Needs {stamina_cost} • {EMOJI_LUST} Needs {lust_cost}")
+        has_cost_info = "stamina_cost" in result or "lust_cost" in result
+        if has_cost_info:
+            stamina_display = stamina_cost if stamina_cost is not None else 0
+            lust_display = lust_cost if lust_cost is not None else 0
+            if "lust_before" in result:
+                lines.append(
+                    f"⚡ Spent {stamina_display} • {EMOJI_LUST} Spent {lust_display}"
+                )
+            else:
+                lines.append(
+                    f"⚡ Needs {stamina_display} • {EMOJI_LUST} Needs {lust_display}"
+                )
         else:
-            lines.append(f"⚡ Spent {stamina_cost} • {EMOJI_LUST} Spent {lust_cost}")
+            lines.append("⚡ No resources spent")
         lines.append(f"{EMOJI_LUST} Mood now: {mood_after} ({lust_after}/{girl.lust_max})")
 
         if result.get("injured"):
