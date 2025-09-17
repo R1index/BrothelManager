@@ -49,6 +49,16 @@ class BrothelHygieneTests(unittest.TestCase):
         self.assertGreaterEqual(high.morale, low.morale)
         self.assertGreaterEqual(high.renown, low.renown)
 
+    def test_decay_residual_accumulates_with_frequent_calls(self):
+        brothel = BrothelState(hygiene_level=9, cleanliness=90)
+
+        for _ in range(10):
+            brothel.last_tick_ts = now_ts() - 900
+            brothel.apply_decay()
+
+        self.assertLess(brothel.cleanliness, 90)
+        self.assertLessEqual(brothel.cleanliness, 85)
+
     def test_hygiene_improves_maintenance(self):
         low = BrothelState(hygiene_level=1, cleanliness=40, upkeep_pool=0)
         high = BrothelState(hygiene_level=7, cleanliness=40, upkeep_pool=0)
