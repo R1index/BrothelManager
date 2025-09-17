@@ -1375,7 +1375,7 @@ class BrothelManageView(discord.ui.View):
             )
         return embed
 
-    async def _refresh(self, interaction: discord.Interaction, *, notes: list[str] | None = None) -> None:
+    async def _send_update(self, interaction: discord.Interaction, *, notes: list[str] | None = None) -> None:
         embed = self._build_embed(notes=notes)
         await interaction.response.edit_message(embed=embed, view=self)
 
@@ -1414,20 +1414,20 @@ class BrothelManageView(discord.ui.View):
 
     async def _run_action(self, interaction: discord.Interaction) -> None:
         if self.selected_action == "view":
-            await self._refresh(interaction)
+            await self._send_update(interaction)
             return
 
         invest = max(0, self.invest_amount)
         if self.selected_action == "upgrade" and not self.selected_facility:
-            await self._refresh(interaction, notes=["Select a facility to upgrade."])
+            await self._send_update(interaction, notes=["Select a facility to upgrade."])
             return
 
         if invest <= 0:
-            await self._refresh(interaction, notes=["Select how many coins to invest."])
+            await self._send_update(interaction, notes=["Select how many coins to invest."])
             return
 
         if self.player.currency < invest:
-            await self._refresh(
+            await self._send_update(
                 interaction,
                 notes=[f"Not enough coins. Need {EMOJI_COIN} {invest}."]
             )
@@ -1443,7 +1443,7 @@ class BrothelManageView(discord.ui.View):
         }
 
         if self.selected_action not in handlers:
-            await self._refresh(interaction, notes=["Unknown action."])
+            await self._send_update(interaction, notes=["Unknown action."])
             return
 
         notes = handlers[self.selected_action]()
@@ -1455,7 +1455,7 @@ class BrothelManageView(discord.ui.View):
         save_player(self.player)
 
         self._reset_after_action()
-        await self._refresh(interaction, notes=notes)
+        await self._send_update(interaction, notes=notes)
 
     class ActionSelect(discord.ui.Select):
         def __init__(self, parent: "BrothelManageView") -> None:
@@ -1479,7 +1479,7 @@ class BrothelManageView(discord.ui.View):
             if self.manager.selected_action == "view":
                 self.manager.invest_amount = 0
             self.manager._update_components()
-            await self.manager._refresh(interaction)
+            await self.manager._send_update(interaction)
 
     class FacilitySelect(discord.ui.Select):
         def __init__(self, parent: "BrothelManageView") -> None:
@@ -1503,7 +1503,7 @@ class BrothelManageView(discord.ui.View):
             self.manager.selected_facility = self.values[0]
             icon, label = FACILITY_INFO[self.manager.selected_facility]
             self.placeholder = f"{icon} {label}"
-            await self.manager._refresh(interaction)
+            await self.manager._send_update(interaction)
 
     class CoinSelect(discord.ui.Select):
         def __init__(self, parent: "BrothelManageView") -> None:
@@ -1532,7 +1532,7 @@ class BrothelManageView(discord.ui.View):
                 self.placeholder = f"{self.manager.invest_amount} coins selected"
             else:
                 self.placeholder = "No coins selected"
-            await self.manager._refresh(interaction)
+            await self.manager._send_update(interaction)
 
     @discord.ui.button(label="Execute", style=discord.ButtonStyle.success, emoji="✅", row=3)
     async def execute_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
@@ -1595,10 +1595,7 @@ class TrainingManageView(discord.ui.View):
         self.assignment_select = self.AssignmentSelect(self)
 
         self.add_item(self.action_select)
-        self.add_item(self.mentor_select)
-        self.add_item(self.student_select)
-        self.add_item(self.focus_select)
-        self.add_item(self.assignment_select)
+        self._sync_component_layout()
         self._update_components()
 
     async def start(self, interaction: discord.Interaction) -> None:
@@ -1682,7 +1679,36 @@ class TrainingManageView(discord.ui.View):
         options = self._build_assignment_options()
         self.assignment_select.options = options or [self.assignment_select.EMPTY_OPTION]
 
+    def _sync_component_layout(self) -> None:
+        if self.action_select not in self.children:
+            self.add_item(self.action_select)
+
+        assign_items = (
+            self.mentor_select,
+            self.student_select,
+            self.focus_select,
+        )
+
+        if self.current_action == "assign":
+            for item in assign_items:
+                if item not in self.children:
+                    self.add_item(item)
+            if self.assignment_select in self.children:
+                self.remove_item(self.assignment_select)
+        elif self.current_action == "finish":
+            for item in assign_items:
+                if item in self.children:
+                    self.remove_item(item)
+            if self.assignment_select not in self.children:
+                self.add_item(self.assignment_select)
+        else:
+            for item in (*assign_items, self.assignment_select):
+                if item in self.children:
+                    self.remove_item(item)
+
     def _update_components(self) -> None:
+        self._sync_component_layout()
+
         label = self.ACTION_LABELS.get(self.current_action, self.current_action.title())
         self.action_select.placeholder = label
 
@@ -1764,7 +1790,7 @@ class TrainingManageView(discord.ui.View):
             embed.add_field(name="Status", value="\n".join(notes), inline=False)
         return embed
 
-    async def _refresh(self, interaction: discord.Interaction, *, notes: list[str] | None = None) -> None:
+    async def _send_update(self, interaction: discord.Interaction, *, notes: list[str] | None = None) -> None:
         embed = self._build_embed(notes=notes)
         await interaction.response.edit_message(embed=embed, view=self)
 
@@ -1795,7 +1821,7 @@ class TrainingManageView(discord.ui.View):
             if self.manager.current_action != "finish":
                 self.manager.selected_assignment_uid = None
             self.manager._update_components()
-            await self.manager._refresh(interaction)
+            await self.manager._send_update(interaction)
 
     class MentorSelect(discord.ui.Select):
         EMPTY_OPTION = discord.SelectOption(label="No eligible girls", value="none")
@@ -1825,7 +1851,7 @@ class TrainingManageView(discord.ui.View):
             self.manager.selected_mentor = value
             mentor_name = self.manager._girl_name(self.manager.selected_mentor) or "Mentor"
             self.placeholder = f"Mentor: {mentor_name}"
-            await self.manager._refresh(interaction)
+            await self.manager._send_update(interaction)
 
     class StudentSelect(discord.ui.Select):
         EMPTY_OPTION = discord.SelectOption(label="No eligible girls", value="none")
@@ -1838,7 +1864,7 @@ class TrainingManageView(discord.ui.View):
                 min_values=1,
                 max_values=1,
                 options=options,
-                row=1,
+                row=2,
             )
 
         def refresh_options(self) -> None:
@@ -1855,7 +1881,7 @@ class TrainingManageView(discord.ui.View):
             self.manager.selected_student = value
             student_name = self.manager._girl_name(self.manager.selected_student) or "Student"
             self.placeholder = f"Student: {student_name}"
-            await self.manager._refresh(interaction)
+            await self.manager._send_update(interaction)
 
     class FocusSelect(discord.ui.Select):
         def __init__(self, parent: "TrainingManageView") -> None:
@@ -1872,7 +1898,7 @@ class TrainingManageView(discord.ui.View):
                 min_values=1,
                 max_values=1,
                 options=options,
-                row=2,
+                row=3,
                 disabled=True,
             )
 
@@ -1888,7 +1914,7 @@ class TrainingManageView(discord.ui.View):
                 self.manager.selected_focus_name,
             )
             self.placeholder = f"Focus: {focus_text}"
-            await self.manager._refresh(interaction)
+            await self.manager._send_update(interaction)
 
     class AssignmentSelect(discord.ui.Select):
         EMPTY_OPTION = discord.SelectOption(label="No active mentorships", value="none")
@@ -1901,7 +1927,7 @@ class TrainingManageView(discord.ui.View):
                 min_values=1,
                 max_values=1,
                 options=options,
-                row=3,
+                row=1,
                 disabled=True,
             )
 
@@ -1918,7 +1944,7 @@ class TrainingManageView(discord.ui.View):
                 or "Mentorship"
             )
             self.placeholder = assignment_label[:100]
-            await self.manager._refresh(interaction)
+            await self.manager._send_update(interaction)
 
     @discord.ui.button(label="Execute", style=discord.ButtonStyle.success, emoji="✅", row=4)
     async def execute_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
@@ -1930,15 +1956,15 @@ class TrainingManageView(discord.ui.View):
             note = (
                 [f"Active mentorships: {len(lines)}"] if lines else ["No active mentorships."]
             )
-            await self._refresh(interaction, notes=note)
+            await self._send_update(interaction, notes=note)
             return
 
         if self.current_action == "assign":
             if not self.selected_mentor or not self.selected_student:
-                await self._refresh(interaction, notes=["Select mentor and student first."])
+                await self._send_update(interaction, notes=["Select mentor and student first."])
                 return
             if not (self.selected_focus_type and self.selected_focus_name):
-                await self._refresh(interaction, notes=["Select a skill focus for the mentorship."])
+                await self._send_update(interaction, notes=["Select a skill focus for the mentorship."])
                 return
             success, message = self.cog._assign_training(
                 self.player,
@@ -1953,12 +1979,12 @@ class TrainingManageView(discord.ui.View):
                 save_player(self.player)
                 self.selected_assignment_uid = None
             self._update_components()
-            await self._refresh(interaction, notes=notes)
+            await self._send_update(interaction, notes=notes)
             return
 
         if self.current_action == "finish":
             if not self.selected_assignment_uid:
-                await self._refresh(interaction, notes=["Select which mentorship to finish."])
+                await self._send_update(interaction, notes=["Select which mentorship to finish."])
                 return
             success, message = self.cog._finish_training(
                 self.player,
@@ -1970,10 +1996,10 @@ class TrainingManageView(discord.ui.View):
                 save_player(self.player)
                 self.selected_assignment_uid = None
             self._update_components()
-            await self._refresh(interaction, notes=notes)
+            await self._send_update(interaction, notes=notes)
             return
 
-        await self._refresh(interaction, notes=["Unknown action."])
+        await self._send_update(interaction, notes=["Unknown action."])
 
     @discord.ui.button(label="Close", style=discord.ButtonStyle.danger, emoji="✖️", row=4)
     async def close_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
