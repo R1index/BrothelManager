@@ -314,21 +314,38 @@ class MarketWorkView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=self)
 
     def _allocate_job_option_value(self, canonical: str, seen_values: set[str], idx: int) -> str:
-        base_value = (canonical or f"J{idx}").strip() or f"J{idx}"
+        """Allocate a stable, unique select value for a job option."""
+
+        canonical = (canonical or "").strip()
+        base_value = canonical or f"J{idx}"
+        prefix = f"{idx:02d}-"
         max_len = 100
-        trimmed = base_value[:max_len]
-        if trimmed not in seen_values:
-            seen_values.add(trimmed)
-            return trimmed
+
+        def build_candidate(suffix: str = "") -> str:
+            suffix = suffix or ""
+            available = max_len - len(prefix) - len(suffix)
+            available = max(0, available)
+            body = base_value[:available]
+            if body:
+                return f"{prefix}{body}{suffix}"
+
+            bare_prefix = prefix.rstrip("-") or f"{idx:02d}"
+            available = max_len - len(bare_prefix) - len(suffix)
+            if available > 0:
+                body = base_value[:available]
+                if body:
+                    return f"{bare_prefix}{body}{suffix}"
+            candidate = f"{bare_prefix}{suffix}" if suffix else bare_prefix
+            return candidate[:max_len]
+
+        candidate = build_candidate()
+        if candidate not in seen_values:
+            seen_values.add(candidate)
+            return candidate
 
         suffix = 2
         while True:
-            suffix_text = f"-{suffix}"
-            allowed = max_len - len(suffix_text)
-            if allowed <= 0:
-                candidate = suffix_text[-max_len:]
-            else:
-                candidate = f"{trimmed[:allowed]}{suffix_text}"
+            candidate = build_candidate(f"-{suffix}")
             if candidate not in seen_values:
                 seen_values.add(candidate)
                 return candidate
