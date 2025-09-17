@@ -965,6 +965,16 @@ class Core(commands.Cog):
             return f"{value:,}".replace(",", " ")
 
         view: TopLeaderboardView | None = None
+        used_entry_values: set[str] = set()
+
+        def unique_entry_value(base: str) -> str:
+            value = base
+            suffix = 2
+            while value in used_entry_values:
+                value = f"{base}-{suffix}"
+                suffix += 1
+            used_entry_values.add(value)
+            return value
 
         if cat == "brothel":
             raw_entries = brothel_leaderboard(10)
@@ -1007,7 +1017,7 @@ class Core(commands.Cog):
                 )
                 entries_for_view.append(
                     {
-                        "value": str(player.user_id),
+                        "value": unique_entry_value(str(player.user_id)),
                         "label": f"#{idx} {display_name}",
                         "description": (
                             f"Score {score_text} • Rooms {brothel.rooms} • Girls {girls_count}"
@@ -1069,7 +1079,7 @@ class Core(commands.Cog):
                 )
                 entries_for_view.append(
                     {
-                        "value": girl.uid,
+                        "value": unique_entry_value(str(girl.uid)),
                         "label": f"#{idx} {girl.name}",
                         "description": (
                             f"Owner {owner_display} • Lv{girl.level} • Score {score_text}"
