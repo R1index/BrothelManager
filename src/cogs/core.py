@@ -66,7 +66,7 @@ from ..game.embeds import (
     build_girl_embed,
 )
 from ..game.utils import choice_value
-from ..game.views import MarketWorkView, Paginator
+from ..game.views import MarketWorkView, Paginator, TopLeaderboardView
 
 
 BROTHEL_ALLOWED_ACTIONS = {"view", "upgrade", "maintain", "promote", "expand"}
@@ -936,40 +936,147 @@ class Core(commands.Cog):
         if cat not in {"brothel", "girls"}:
             cat = "brothel"
 
+        def fmt_number(value: int) -> str:
+            return f"{value:,}".replace(",", " ")
+
+        view: TopLeaderboardView | None = None
+
         if cat == "brothel":
-            entries = brothel_leaderboard(10)
+            raw_entries = brothel_leaderboard(10)
             embed = discord.Embed(title="Top Brothels", color=0xF59E0B)
-            if not entries:
+            entries_for_view: list[dict[str, Any]] = []
+
+            if not raw_entries:
                 embed.description = "No data yet."
-            for idx, (score, player) in enumerate(entries, start=1):
-                user = interaction.client.get_user(player.user_id) or interaction.guild and interaction.guild.get_member(player.user_id)
-                mention = f"<@{player.user_id}>" if user is None else user.mention
-                brothel = player.ensure_brothel()
-                embed.add_field(
-                    name=f"{idx}. {mention}",
-                    value=(
-                        f"Score {score} • Rooms {brothel.rooms} • "
-                        f"Renown {player.renown}"
-                    ),
-                    inline=False,
-                )
-        else:
-            entries = girl_leaderboard(10)
-            embed = discord.Embed(title="Top Girls", color=0x8B5CF6)
-            if not entries:
-                embed.description = "No girls ranked yet."
-            for idx, (score, player, girl) in enumerate(entries, start=1):
-                user = interaction.client.get_user(player.user_id) or interaction.guild and interaction.guild.get_member(player.user_id)
-                owner = f"<@{player.user_id}>" if user is None else user.mention
-                embed.add_field(
-                    name=f"{idx}. {girl.name} [{girl.rarity}]",
-                    value=(
-                        f"Owner {owner} • Lv{girl.level} • Score {score}"
-                    ),
-                    inline=False,
+            else:
+                embed.description = (
+                    "Top establishments by facility strength, rooms and renown.\n"
+                    "Use the selector below to inspect any brothel in detail."
                 )
 
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+            for idx, (score, player) in enumerate(raw_entries, start=1):
+                user = interaction.client.get_user(player.user_id) or (
+                    interaction.guild and interaction.guild.get_member(player.user_id)
+                )
+                display_name = user.display_name if user else f"Player {player.user_id}"
+                mention = user.mention if user else f"<@{player.user_id}>"
+                brothel = player.ensure_brothel()
+                girls_count = len(player.girls)
+                score_text = fmt_number(score)
+                field_lines = [
+                    f"Owner: {mention}",
+                    (
+                        f"{EMOJI_COIN} Score {score_text} • {EMOJI_ROOMS} {brothel.rooms} • "
+                        f"{EMOJI_GIRL} {girls_count}"
+                    ),
+                    (
+                        f"{EMOJI_POPULARITY} Renown {player.renown} • "
+                        f"{EMOJI_CLEAN} {brothel.cleanliness}/100 • "
+                        f"{EMOJI_MORALE} {brothel.morale}/100"
+                    ),
+                ]
+                embed.add_field(
+                    name=f"#{idx} {display_name}",
+                    value="\n".join(field_lines),
+                    inline=False,
+                )
+                entries_for_view.append(
+                    {
+                        "value": str(player.user_id),
+                        "label": f"#{idx} {display_name}",
+                        "description": (
+                            f"Score {score_text} • Rooms {brothel.rooms} • Girls {girls_count}"
+                        ),
+                        "player": player,
+                        "display_name": display_name,
+                        "mention": mention,
+                        "score": score,
+                        "score_text": score_text,
+                        "rank": idx,
+                    }
+                )
+
+            if entries_for_view:
+                embed.set_footer(
+                    text="Select a brothel below to view its full profile."
+                )
+                view = TopLeaderboardView(
+                    invoker_id=interaction.user.id,
+                    category="brothel",
+                    entries=entries_for_view,
+                    leaderboard_embed=embed,
+                )
+        else:
+            raw_entries = girl_leaderboard(10)
+            embed = discord.Embed(title="Top Girls", color=0x8B5CF6)
+            entries_for_view = []
+
+            if not raw_entries:
+                embed.description = "No girls ranked yet."
+            else:
+                embed.description = (
+                    "Highest-scoring girls in the city.\n"
+                    "Use the selector below to open their full profiles."
+                )
+
+            for idx, (score, player, girl) in enumerate(raw_entries, start=1):
+                user = interaction.client.get_user(player.user_id) or (
+                    interaction.guild and interaction.guild.get_member(player.user_id)
+                )
+                owner_display = user.display_name if user else f"Player {player.user_id}"
+                owner_mention = user.mention if user else f"<@{player.user_id}>"
+                score_text = fmt_number(score)
+                field_lines = [
+                    f"Owner: {owner_mention}",
+                    (
+                        f"{EMOJI_COIN} Score {score_text} • Lv{girl.level} • {girl.rarity}"
+                    ),
+                    (
+                        f"{EMOJI_HEART} {girl.health}/{girl.health_max} • "
+                        f"{EMOJI_ENERGY} {girl.stamina}/{girl.stamina_max} • "
+                        f"{EMOJI_LUST} {girl.lust}/{girl.lust_max}"
+                    ),
+                ]
+                embed.add_field(
+                    name=f"#{idx} {girl.name} [{girl.rarity}]",
+                    value="\n".join(field_lines),
+                    inline=False,
+                )
+                entry_value = f"{player.user_id}:{girl.uid}"
+                entries_for_view.append(
+                    {
+                        "value": entry_value,
+                        "label": f"#{idx} {girl.name}",
+                        "description": (
+                            f"Owner {owner_display} • Lv{girl.level} • Score {score_text}"
+                        ),
+                        "player": player,
+                        "girl": girl,
+                        "owner_display": owner_display,
+                        "owner_mention": owner_mention,
+                        "score": score,
+                        "score_text": score_text,
+                        "rank": idx,
+                    }
+                )
+
+            if entries_for_view:
+                embed.set_footer(
+                    text="Select a girl below to view a detailed profile."
+                )
+                view = TopLeaderboardView(
+                    invoker_id=interaction.user.id,
+                    category="girls",
+                    entries=entries_for_view,
+                    leaderboard_embed=embed,
+                )
+
+        if view:
+            await interaction.response.send_message(
+                embed=embed, view=view, ephemeral=True
+            )
+        else:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="market", description="Browse the market and send a girl to work")
     @app_commands.describe(level="Optional market level override")

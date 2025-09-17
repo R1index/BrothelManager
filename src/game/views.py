@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import os
 import time
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 import discord
 
@@ -35,7 +35,7 @@ from .constants import (
     SKILL_ICONS,
     SUB_SKILL_ICONS,
 )
-from .embeds import brothel_overview_lines
+from .embeds import brothel_overview_lines, build_brothel_embed, build_girl_embed
 from .utils import lust_state_icon, lust_state_label
 
 
@@ -749,3 +749,140 @@ class MarketWorkView(discord.ui.View):
         self._apply_state(player, market)
         embed = self.build_embed()
         await interaction.response.edit_message(embed=embed, view=self)
+
+
+class TopLeaderboardView(discord.ui.View):
+    """Interactive leaderboard allowing inspection of brothels or girls."""
+
+    def __init__(
+        self,
+        *,
+        invoker_id: int,
+        category: str,
+        entries: list[dict[str, Any]],
+        leaderboard_embed: discord.Embed,
+        timeout: float = 180.0,
+    ):
+        super().__init__(timeout=timeout)
+        self.invoker_id = invoker_id
+        self.category = category
+        self.entries = entries
+        self.entry_lookup = {entry["value"]: entry for entry in entries}
+        self.leaderboard_embed = leaderboard_embed.copy()
+        self.entry_select = self.EntrySelect(self, self._default_placeholder(), entries)
+        self.add_item(self.entry_select)
+        self.back_btn.disabled = True
+
+    def _default_placeholder(self) -> str:
+        if self.category == "girls":
+            return "Inspect a ranked girl..."
+        return "Inspect a ranked brothel..."
+
+    class EntrySelect(discord.ui.Select):
+        def __init__(
+            self,
+            parent: "TopLeaderboardView",
+            placeholder: str,
+            entries: list[dict[str, Any]],
+        ):
+            options = [
+                discord.SelectOption(
+                    label=entry["label"][:100],
+                    value=entry["value"],
+                    description=(entry.get("description") or "")[:100],
+                )
+                for entry in entries
+            ]
+            super().__init__(
+                placeholder=placeholder,
+                min_values=1,
+                max_values=1,
+                options=options,
+                disabled=not options,
+            )
+            self.parent = parent
+
+        async def callback(self, interaction: discord.Interaction):
+            if interaction.user.id != self.parent.invoker_id:
+                await interaction.response.send_message(
+                    "This isn't your leaderboard.", ephemeral=True
+                )
+                return
+            value = self.values[0]
+            await self.parent.show_entry(interaction, value)
+
+    async def show_entry(self, interaction: discord.Interaction, value: str):
+        entry = self.entry_lookup.get(value)
+        if not entry:
+            await interaction.response.send_message(
+                "That entry is no longer available.", ephemeral=True
+            )
+            return
+
+        for option in self.entry_select.options:
+            option.default = option.value == value
+
+        self.entry_select.placeholder = f"Viewing: {entry['label'][:75]}"
+        self.back_btn.disabled = False
+
+        if self.category == "brothel":
+            await self._show_brothel_entry(interaction, entry)
+        else:
+            await self._show_girl_entry(interaction, entry)
+
+    async def _show_brothel_entry(
+        self, interaction: discord.Interaction, entry: dict[str, Any]
+    ):
+        player = entry["player"]
+        brothel = player.ensure_brothel()
+        notes = [
+            f"Leaderboard rank #{entry.get('rank')} • Score {entry.get('score_text', entry.get('score'))}",
+            f"Owner: {entry.get('mention', '')}".strip(),
+        ]
+        notes = [line for line in notes if line]
+        embed = build_brothel_embed(entry.get("display_name", "Unknown"), player, notes)
+        embed.set_footer(
+            text="Viewing another player's brothel. Stats refresh when they play."
+        )
+        await interaction.response.edit_message(embed=embed, attachments=[], view=self)
+
+    async def _show_girl_entry(
+        self, interaction: discord.Interaction, entry: dict[str, Any]
+    ):
+        player = entry["player"]
+        brothel = player.ensure_brothel()
+        girl = entry["girl"]
+        embed, image_path = build_girl_embed(girl, brothel)
+        score_text = entry.get("score_text") or entry.get("score")
+        owner_display = entry.get("owner_display") or entry.get("owner_mention")
+        embed.set_footer(
+            text=f"Owner: {owner_display} • Rank #{entry.get('rank')} • Score {score_text}"
+        )
+
+        file = None
+        if image_path and os.path.exists(image_path):
+            file = discord.File(image_path, filename=os.path.basename(image_path))
+            await interaction.response.edit_message(
+                embed=embed, attachments=[file], view=self
+            )
+        else:
+            await interaction.response.edit_message(
+                embed=embed, attachments=[], view=self
+            )
+
+    @discord.ui.button(label="Back to leaderboard", style=discord.ButtonStyle.secondary)
+    async def back_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.invoker_id:
+            await interaction.response.send_message(
+                "This isn't your leaderboard.", ephemeral=True
+            )
+            return
+
+        for option in self.entry_select.options:
+            option.default = False
+
+        self.entry_select.placeholder = self._default_placeholder()
+        self.back_btn.disabled = True
+        await interaction.response.edit_message(
+            embed=self.leaderboard_embed.copy(), attachments=[], view=self
+        )
