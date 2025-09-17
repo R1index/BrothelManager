@@ -87,6 +87,8 @@ class Admin(commands.Cog):
             )
             return
 
+        await interaction.response.defer(thinking=True, ephemeral=True)
+
         report = await self._sync_commands(report_changes=True)
         message: str
         if report is None:
@@ -105,7 +107,7 @@ class Admin(commands.Cog):
                         f"Invalid guild id {invalid_value!r}; globally synced {count} commands instead."
                     )
 
-        await interaction.response.send_message(message, ephemeral=True)
+        await interaction.followup.send(message, ephemeral=True)
 
     @app_commands.command(name="invite", description="Get bot invite link (applications.commands + bot)")
     async def invite(self, interaction: discord.Interaction) -> None:
