@@ -20,6 +20,7 @@ from ..storage import (
     iter_user_ids,
     brothel_leaderboard,
     girl_leaderboard,
+    get_config,
 )
 from ..models import (
     MAIN_SKILLS,
@@ -87,6 +88,9 @@ def normalize_brothel_action(
 class Core(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        config = get_config()
+        self.market_refresh_minutes = self._resolve_refresh_minutes(config)
+        self.market_refresher.change_interval(minutes=self.market_refresh_minutes)
         self.market_refresher.start()
 
     def cog_unload(self):
@@ -94,12 +98,29 @@ class Core(commands.Cog):
 
     @tasks.loop(minutes=5)
     async def market_refresher(self):
-        """Refresh all users' markets every 5 minutes by scanning data/users directory."""
+        """Refresh all users' markets by scanning the users directory."""
         try:
             for uid in iter_user_ids():
                 refresh_market_if_stale(uid, max_age_sec=0)
         except Exception as exc:
             print("[market_refresher] error:", exc)
+
+    @staticmethod
+    def _resolve_refresh_minutes(config: Optional[dict]) -> float:
+        default_minutes = 5.0
+        if not isinstance(config, dict):
+            return default_minutes
+        market_cfg = config.get("market")
+        if not isinstance(market_cfg, dict):
+            return default_minutes
+        raw_value = market_cfg.get("refresh_minutes", default_minutes)
+        try:
+            minutes = float(raw_value)
+        except (TypeError, ValueError):
+            return default_minutes
+        if minutes <= 0:
+            return default_minutes
+        return minutes
 
     def _brothel_status_notes(self, brothel) -> list[str]:
         notes: list[str] = []

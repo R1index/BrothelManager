@@ -36,7 +36,10 @@ class GameService:
         self._config_cache: dict | None = None
 
     def _load_config(self) -> dict:
+        from .. import assets_util
+
         if self._config_cache is not None:
+            assets_util.set_assets_dir(self.store.assets_dir)
             return self._config_cache
 
         path = self.store.base_dir / "config.json"
@@ -49,8 +52,19 @@ class GameService:
         if not isinstance(data, dict):
             data = {}
 
+        paths_cfg = data.get("paths") if isinstance(data, dict) else None
+        self.store.configure_paths(paths_cfg if isinstance(paths_cfg, dict) else None)
+        assets_util.set_assets_dir(self.store.assets_dir)
+
         self._config_cache = data
         return self._config_cache
+
+    def get_config(self) -> dict:
+        return self._load_config()
+
+    @property
+    def config(self) -> dict:
+        return self._load_config()
 
     def _starter_girl_from_config(self, entries: List[dict]) -> Optional[dict]:
         config = self._load_config()
@@ -375,6 +389,9 @@ class GameService:
         return market
 
     def generate_market(self, uid: int, jobs_count: int = 5, forced_level: int | None = None) -> Market:
+        config = self._load_config()
+        market_cfg = config.get("market") if isinstance(config, dict) else None
+
         player = self.load_player(uid)
         brothel = player.ensure_brothel() if player else None
         renown = player.renown if player else 0
@@ -387,10 +404,22 @@ class GameService:
                 + brothel.facility_level("comfort")
                 + brothel.facility_level("security") // 2
             )
-        base_jobs = 3 + level + max(0, brothel.rooms - 2 if brothel else 0)
+        fallback_jobs = int(jobs_count) if jobs_count else 1
+        raw_jobs_per_level = (market_cfg or {}).get("jobs_per_level", fallback_jobs)
+        try:
+            jobs_per_level = int(raw_jobs_per_level)
+        except (TypeError, ValueError):
+            jobs_per_level = fallback_jobs
+        if jobs_per_level <= 0:
+            jobs_per_level = fallback_jobs or 1
+        jobs_per_level = max(1, jobs_per_level)
+
+        level_multiplier = max(1, level + 1)
+        base_jobs = jobs_per_level * level_multiplier
+        base_jobs += max(0, brothel.rooms - 2 if brothel else 0)
         base_jobs += facility_influence // 2
         base_jobs += renown // 120
-        jobs_total = int(max(3, min(10, base_jobs)))
+        jobs_total = int(max(1, min(10, base_jobs)))
 
         jobs: List[Job] = []
         for idx in range(jobs_total):

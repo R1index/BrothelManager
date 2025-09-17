@@ -1,7 +1,16 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
+from src import assets_util
 from src.game.services import GameService
 from src.models import BrothelState, Girl, Job
+from src.game.repository import DataStore
+
+
+def _write_config(base: Path, payload: dict) -> None:
+    (base / "config.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
 class EvaluateJobTests(unittest.TestCase):
@@ -41,6 +50,49 @@ class EvaluateJobTests(unittest.TestCase):
         self.assertLess(adjusted["lust_cost"], baseline["lust_cost"])
         self.assertTrue(adjusted["lust_ok"])
         self.assertTrue(adjusted["can_attempt"])
+
+
+class ConfigOverridesTests(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        self.addCleanup(lambda: assets_util.set_assets_dir(None))
+        self.base_path = Path(self.tmpdir.name)
+        _write_config(
+            self.base_path,
+            {
+                "paths": {
+                    "data_dir": "save_data",
+                    "catalog": "configs/catalog.json",
+                    "assets": "art/girls",
+                },
+                "market": {"jobs_per_level": 2, "refresh_minutes": 3},
+            },
+        )
+        self.store = DataStore(base_dir=self.base_path)
+        self.service = GameService(self.store)
+
+    def test_paths_override_and_assets_applied(self):
+        self.service.config  # trigger config load
+        expected_data_dir = self.base_path / "save_data"
+        self.assertEqual(self.store.data_dir, expected_data_dir)
+        self.assertEqual(self.store.users_dir, expected_data_dir / "users")
+        self.assertEqual(self.store.market_dir, expected_data_dir / "markets")
+        self.assertEqual(self.store.catalog_path, self.base_path / "configs/catalog.json")
+        self.assertEqual(assets_util.get_assets_dir(), self.base_path / "art/girls")
+
+        asset_dir = self.store.assets_dir / "test_girl"
+        asset_dir.mkdir(parents=True, exist_ok=True)
+        profile_path = asset_dir / "test_girl_profile.png"
+        profile_path.write_bytes(b"")
+        self.assertEqual(
+            assets_util.profile_image_path("Test Girl"),
+            str(profile_path),
+        )
+
+    def test_jobs_per_level_influences_market_size(self):
+        market = self.service.generate_market(uid=42, forced_level=1)
+        self.assertEqual(len(market.jobs), 4)
 
 
 if __name__ == "__main__":
