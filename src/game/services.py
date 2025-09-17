@@ -606,8 +606,8 @@ class GameService:
 
     def resolve_job(self, player: Player, job: Job, girl: Girl) -> dict:
         brothel = player.ensure_brothel()
-        girl.apply_regen(brothel)
         brothel.apply_decay()
+        girl.apply_regen(brothel)
         player.renown = brothel.renown
 
         if girl.pregnant:
