@@ -1,138 +1,114 @@
-"""Filesystem-backed persistence for player and market data."""
+"""Файловое хранилище игровых данных."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Iterable, Optional
+from threading import RLock
+from typing import Dict, Iterator, Optional
+
+from .. import assets_util
+
+__all__ = ["DataStore"]
 
 
 class DataStore:
-    """Utility wrapper around the project's data directories."""
+    """Управление каталогами и чтением/записью JSON."""
 
-    def __init__(self, base_dir: Path | str | None = None):
-        default_base = Path(__file__).resolve().parents[2]
-        if base_dir is None:
-            resolved_base = default_base
-        else:
-            resolved_base = Path(base_dir).expanduser()
-            if not resolved_base.is_absolute():
-                resolved_base = default_base / resolved_base
-        self.base_dir = resolved_base.resolve()
+    def __init__(self, base_dir: Optional[Path | str] = None) -> None:
+        self.base_dir = Path(base_dir) if base_dir is not None else Path.cwd()
+        self.config_path = self.base_dir / "config.json"
         self.data_dir = self.base_dir / "data"
         self.users_dir = self.data_dir / "users"
         self.market_dir = self.data_dir / "markets"
         self.catalog_path = self.data_dir / "girls_catalog.json"
         self.assets_dir = self.base_dir / "assets" / "girls"
-        self._ensure_dirs()
+        self._lock = RLock()
+        self.ensure_dirs()
 
-    def _coerce_path(self, value: Path | str, relative_to: Path) -> Path:
-        path = Path(value).expanduser()
-        if not path.is_absolute():
-            path = relative_to / path
-        return path.resolve()
-
-    def _ensure_dirs(self) -> None:
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.users_dir.mkdir(parents=True, exist_ok=True)
-        self.market_dir.mkdir(parents=True, exist_ok=True)
-        catalog_parent = self.catalog_path.parent
-        catalog_parent.mkdir(parents=True, exist_ok=True)
-
-    def configure_paths(self, paths: dict | None) -> None:
-        """Apply path overrides from configuration."""
-
-        if not isinstance(paths, dict):
-            self._ensure_dirs()
+    # ------------------------------------------------------------------
+    # Переопределение путей
+    # ------------------------------------------------------------------
+    def configure_paths(self, payload: Optional[Dict[str, str]]) -> None:
+        if not payload:
+            self.ensure_dirs()
             return
 
-        base_override = paths.get("base_dir")
-        if base_override is not None:
-            self.base_dir = self._coerce_path(base_override, self.base_dir)
-
-        base_dir = self.base_dir
-
-        data_dir_value = paths.get("data_dir")
-        users_dir_value = paths.get("users_dir") or paths.get("users")
-        markets_dir_value = paths.get("markets_dir") or paths.get("markets")
-        catalog_value = paths.get("catalog")
-        assets_value = paths.get("assets")
-
-        data_dir = base_dir / "data"
-        users_dir = data_dir / "users"
-        markets_dir = data_dir / "markets"
-
-        if data_dir_value is not None:
-            candidate = self._coerce_path(data_dir_value, base_dir)
-            lowered = candidate.name.lower()
-            if lowered == "users" and users_dir_value is None:
-                users_dir = candidate
-                data_dir = candidate.parent
-                if markets_dir_value is None:
-                    markets_dir = data_dir / "markets"
-            elif lowered == "markets" and markets_dir_value is None:
-                markets_dir = candidate
-                data_dir = candidate.parent
-                if users_dir_value is None:
-                    users_dir = data_dir / "users"
-            else:
-                data_dir = candidate
-                users_dir = candidate / "users"
-                markets_dir = candidate / "markets"
-
-        if users_dir_value is not None:
-            users_dir = self._coerce_path(users_dir_value, base_dir)
-        if markets_dir_value is not None:
-            markets_dir = self._coerce_path(markets_dir_value, base_dir)
-
-        self.data_dir = data_dir
-        self.users_dir = users_dir
-        self.market_dir = markets_dir
-
-        if catalog_value is not None:
-            self.catalog_path = self._coerce_path(catalog_value, base_dir)
+        data_dir = payload.get("data_dir")
+        if data_dir:
+            self.data_dir = (self.base_dir / data_dir).resolve()
+        users = payload.get("users")
+        if users:
+            self.users_dir = (self.base_dir / users).resolve()
+        else:
+            self.users_dir = self.data_dir / "users"
+        markets = payload.get("markets")
+        if markets:
+            self.market_dir = (self.base_dir / markets).resolve()
+        else:
+            self.market_dir = self.data_dir / "markets"
+        catalog = payload.get("catalog")
+        if catalog:
+            self.catalog_path = (self.base_dir / catalog).resolve()
         else:
             self.catalog_path = self.data_dir / "girls_catalog.json"
-
-        if assets_value is not None:
-            self.assets_dir = self._coerce_path(assets_value, base_dir)
+        assets = payload.get("assets")
+        if assets:
+            self.assets_dir = (self.base_dir / assets).resolve()
         else:
             self.assets_dir = self.base_dir / "assets" / "girls"
 
-        self._ensure_dirs()
+        self.ensure_dirs()
 
     # ------------------------------------------------------------------
-    # Generic JSON helpers
-    # ------------------------------------------------------------------
-    def read_json(self, path: Path) -> Optional[dict]:
-        if not path.exists():
-            return None
-        with path.open("r", encoding="utf-8") as handle:
-            return json.load(handle)
-
-    def write_json(self, path: Path, data: dict) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("w", encoding="utf-8") as handle:
-            json.dump(data, handle, ensure_ascii=False, indent=2)
+    def ensure_dirs(self) -> None:
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.users_dir.mkdir(parents=True, exist_ok=True)
+        self.market_dir.mkdir(parents=True, exist_ok=True)
+        self.assets_dir.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
-    # Domain specific helpers
+    def user_path(self, user_id: int) -> Path:
+        return self.users_dir / f"{int(user_id)}.json"
+
+    def market_path(self, user_id: int) -> Path:
+        return self.market_dir / f"{int(user_id)}.json"
+
     # ------------------------------------------------------------------
-    def user_path(self, uid: int) -> Path:
-        return self.users_dir / f"{uid}.json"
+    def read_json(self, path: Path) -> Dict:
+        with self._lock:
+            if not path.exists():
+                return {}
+            return json.loads(path.read_text(encoding="utf-8"))
 
-    def market_path(self, uid: int) -> Path:
-        return self.market_dir / f"{uid}.json"
+    def write_json(self, path: Path, payload: Dict) -> None:
+        with self._lock:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def load_catalog(self) -> dict:
-        data = self.read_json(self.catalog_path)
-        if data is None:
-            raise FileNotFoundError(f"Catalog not found: {self.catalog_path}")
-        return data
-
-    def iter_user_ids(self) -> Iterable[int]:
-        for entry in self.users_dir.glob("*.json"):
+    # ------------------------------------------------------------------
+    def iter_user_ids(self) -> Iterator[int]:
+        if not self.users_dir.exists():
+            return iter(())
+        for file in self.users_dir.glob("*.json"):
             try:
-                yield int(entry.stem)
+                yield int(file.stem)
             except ValueError:
                 continue
+
+    # ------------------------------------------------------------------
+    def load_catalog(self) -> Dict:
+        payload = self.read_json(self.catalog_path)
+        girls = payload.get("girls") or []
+        normalized = []
+        for entry in girls:
+            if not isinstance(entry, dict):
+                continue
+            normalized.append(entry)
+        return {"girls": normalized}
+
+    # ------------------------------------------------------------------
+    def apply_assets_dir(self) -> None:
+        assets_util.set_assets_dir(self.assets_dir)
+
+

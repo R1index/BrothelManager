@@ -1,114 +1,98 @@
+"""Утилиты поиска ассетов для девушек.
+
+Модуль предоставляет простой интерфейс для выбора изображений профиля и
+действий. Каталог с ассетами можно переопределить через
+:func:`set_assets_dir` — это используется сервисом при чтении конфигурации.
+"""
+
 from __future__ import annotations
-import os
-import unicodedata
+
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
 
-# Base: <project_root>/assets/girls
-# This file is at: <root>/src/assets_util.py
-BASE_DIR = Path(__file__).resolve().parents[1]
-_DEFAULT_GIRLS_ASSETS = BASE_DIR / "assets" / "girls"
-_GIRLS_ASSETS = _DEFAULT_GIRLS_ASSETS
+__all__ = [
+    "set_assets_dir",
+    "get_assets_dir",
+    "profile_image_path",
+    "action_image_path",
+    "pregnant_profile_image_path",
+]
 
 
-def set_assets_dir(path: Path | str | None) -> None:
-    """Override the base directory used to look up girl assets."""
+@dataclass(slots=True)
+class _AssetLookup:
+    """Контейнер с данными для поиска файлов."""
 
-    global _GIRLS_ASSETS
+    base_dir: Path
+
+    def resolve(self, name: str, patterns: Iterable[str]) -> Optional[Path]:
+        """Вернуть первый существующий файл из ``patterns`` для указанного ``name``."""
+
+        stem = _slugify(name)
+        for pattern in patterns:
+            candidate = self.base_dir / pattern.format(name=stem)
+            if candidate.exists():
+                return candidate
+        return None
+
+
+_assets_lookup: Optional[_AssetLookup] = None
+
+
+def set_assets_dir(path: Optional[Path | str]) -> None:
+    """Настроить базовую директорию ассетов.
+
+    ``None`` сбрасывает директорию в значение по умолчанию (``assets/girls``
+    относительно корня проекта). Указывать можно как ``Path``, так и строку.
+    """
+
+    global _assets_lookup
+
     if path is None:
-        _GIRLS_ASSETS = _DEFAULT_GIRLS_ASSETS
-        return
-    new_path = Path(path).expanduser()
-    try:
-        _GIRLS_ASSETS = new_path.resolve()
-    except OSError:
-        # Path may not exist yet — keep the normalized version without resolve().
-        _GIRLS_ASSETS = new_path
+        base = Path.cwd() / "assets" / "girls"
+    else:
+        base = Path(path)
+    _assets_lookup = _AssetLookup(base_dir=base)
 
 
-def get_assets_dir() -> Path:
-    """Return the currently configured assets directory."""
+def get_assets_dir() -> Optional[Path]:
+    """Вернуть активный каталог ассетов (или ``None``, если не сконфигурирован)."""
 
-    return _GIRLS_ASSETS
+    return _assets_lookup.base_dir if _assets_lookup else None
 
-def _slug(s: str) -> str:
-    """Make safe lowercase slug for filesystem paths."""
-    if not s:
-        return ""
-    s = unicodedata.normalize("NFKD", s)
-    s = s.encode("ascii", "ignore").decode("ascii")
-    return s.strip().lower().replace(" ", "_")
 
-def profile_image_path(girl_name: str, base_id: str = "") -> Optional[str]:
-    """
-    Look for:
-      assets/girls/<name>/<name>_profile.png
-      fallback: assets/girls/<base_id>/<base_id>_profile.png
-    """
-    name_slug = _slug(girl_name)
-    base_slug = _slug(base_id) if base_id else None
+def profile_image_path(name: str) -> str:
+    """Найти изображение профиля девушки."""
 
-    base_path = get_assets_dir()
+    path = _find(name, ("{name}/{name}_profile.png", "{name}/{name}.png"))
+    return str(path) if path else ""
 
-    candidates = []
-    if name_slug:
-        candidates.append(base_path / name_slug / f"{name_slug}_profile.png")
-    if base_slug and base_slug != name_slug:
-        candidates.append(base_path / base_slug / f"{base_slug}_profile.png")
 
-    for p in candidates:
-        if p.exists():
-            return str(p)
-    return None
+def action_image_path(name: str) -> str:
+    """Найти изображение действия (используется в результатах заданий)."""
 
-def action_image_path(girl_name: str, base_id: str, main_skill: str, sub_skill: str) -> Optional[str]:
-    """
-    Look for:
-      assets/girls/<name>/<main>/<sub>.png
-      fallback: assets/girls/<base_id>/<main>/<sub>.png
+    path = _find(name, ("{name}/{name}_action.png", "{name}/{name}_work.png"))
+    return str(path) if path else ""
 
-    where <main> ∈ human|insect|beast|monster,
-          <sub> ∈ anal|vaginal|oral|breast|hand|foot|toy
-    """
-    name_slug = _slug(girl_name)
-    base_slug = _slug(base_id) if base_id else None
-    main = _slug(main_skill)
-    sub = _slug(sub_skill)
 
-    base_path = get_assets_dir()
+def pregnant_profile_image_path(name: str) -> str:
+    """Вернуть альтернативный портрет для беременной версии персонажа."""
 
-    candidates = []
-    if name_slug:
-        candidates.append(base_path / name_slug / main / f"{sub}.png")
-    if base_slug and base_slug != name_slug:
-        candidates.append(base_path / base_slug / main / f"{sub}.png")
+    path = _find(name, ("{name}/{name}_pregnant.png",))
+    return str(path) if path else ""
 
-    for p in candidates:
-        if p.exists():
-            return str(p)
-    return None
 
-def pregnant_profile_image_path(girl_name: str, base_id: str = "") -> Optional[str]:
-    """
-    Look for:
-      assets/girls/<name>/<name>_pregnant.png
-      assets/girls/<name>/pregnant.png
-      fallback: assets/girls/<base_id>/<base_id>_pregnant.png
-    """
-    name_slug = _slug(girl_name)
-    base_slug = _slug(base_id) if base_id else None
+def _find(name: str, patterns: Iterable[str]) -> Optional[Path]:
+    lookup = _assets_lookup
+    if not lookup:
+        return None
+    return lookup.resolve(name, patterns)
 
-    base_path = get_assets_dir()
 
-    candidates = []
-    if name_slug:
-        candidates.append(base_path / name_slug / f"{name_slug}_pregnant.png")
-        candidates.append(base_path / name_slug / "pregnant.png")
-    if base_slug and base_slug != name_slug:
-        candidates.append(base_path / base_slug / f"{base_slug}_pregnant.png")
+def _slugify(name: str) -> str:
+    return "".join(ch for ch in name.lower().replace(" ", "_") if ch.isalnum() or ch in {"_", "-"})
 
-    for p in candidates:
-        if p.exists():
-            return str(p)
-    return None
 
+# Инициализируем директорию по умолчанию при импортировании модуля.
+set_assets_dir(None)

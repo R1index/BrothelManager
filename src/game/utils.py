@@ -1,56 +1,38 @@
-"""Utility helpers used across the bot modules."""
+"""Вспомогательные функции."""
 
 from __future__ import annotations
 
-from typing import Any
-
-from .constants import PREF_ICONS
+from typing import Any, Iterable, Optional
 
 
-def choice_value(option: Any, default: str | None = None) -> str | None:
-    """Extract the raw value from an app command Choice or return the option itself."""
+def choice_value(choice: Any, default: Optional[str] = None) -> Optional[str]:
+    """Безопасно извлечь значение из ``discord.app_commands.Choice``."""
 
-    if option is None:
+    if choice is None:
         return default
-    if hasattr(option, "value"):
-        value = option.value
-    else:
-        value = option
-    if value is None:
+    value = getattr(choice, "value", None)
+    if value in (None, ""):
         return default
-    value = str(value)
-    return value if value else default
+    return str(value)
 
 
-def lust_state_label(ratio: float) -> str:
-    """Convert a lust ratio (0.0-1.0) into a qualitative label."""
-
-    if ratio >= 0.9:
-        return "Overdrive"
-    if ratio >= 0.7:
-        return "Heated"
-    if ratio >= 0.45:
-        return "Aroused"
-    if ratio >= 0.25:
-        return "Warming up"
-    return "Dormant"
+def clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
 
 
-def lust_state_icon(ratio: float) -> str:
-    """Return an emoji representing the lust ratio."""
+def weighted_pick(options: Iterable[tuple[Any, float]]):
+    total = sum(weight for _, weight in options)
+    if total <= 0:
+        raise ValueError("Total weight must be positive")
+    import random
 
-    if ratio >= 0.9:
-        return "💥"
-    if ratio >= 0.7:
-        return "🔥"
-    if ratio >= 0.45:
-        return "❤️"
-    if ratio >= 0.25:
-        return "✨"
-    return "❄️"
+    pivot = random.random() * total
+    cumulative = 0.0
+    for item, weight in options:
+        cumulative += weight
+        if cumulative >= pivot:
+            return item
+    return list(options)[-1][0]
 
 
-def preference_icon(preference: str) -> str:
-    """Map a preference flag (true/fav/false) to its emoji."""
-
-    return PREF_ICONS.get(str(preference).lower(), PREF_ICONS["true"])
+__all__ = ["choice_value", "clamp", "weighted_pick"]

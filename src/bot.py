@@ -1,67 +1,76 @@
-import os
-import json
+"""Точка входа для Discord-бота."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import sys
+from typing import Any
+
 import discord
 from discord.ext import commands
-from discord import app_commands
 
-from .cogs import core, admin
+from .storage import get_config
 
-
-def load_config():
-    """Load config.json (must exist in project root)."""
-    path = os.path.join(os.path.dirname(__file__), "..", "config.json")
-    path = os.path.abspath(path)
-    if not os.path.exists(path):
-        raise RuntimeError(f"Missing config.json at {path}")
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+log = logging.getLogger("brothel")
 
 
-def main():
-    config = load_config()
-    token = config.get("discord", {}).get("token")
-    if not token:
-        raise RuntimeError("Missing bot token in config.json")
+class BrothelBot(commands.Bot):
+    def __init__(self) -> None:
+        intents = discord.Intents.default()
+        intents.message_content = False
+        super().__init__(command_prefix="!", intents=intents)
 
-    intents = discord.Intents.default()
-    intents.guilds = True
-    intents.members = True
-    intents.message_content = True  # useful if you want text triggers
-
-    bot = commands.Bot(command_prefix="!", intents=intents)
-
-    @bot.event
-    async def on_ready():
-        print(f"Logged in as {bot.user} (ID: {bot.user.id})")
-        print(f"[INVITE] https://discord.com/api/oauth2/authorize?client_id={bot.user.id}&permissions=0&scope=bot%20applications.commands")
-
-    async def setup_hook():
-        await bot.load_extension("src.cogs.core")
-        await bot.load_extension("src.cogs.admin")
-
-        guild_id = config.get("discord", {}).get("guild_id")
-        synced = []
-
+    async def setup_hook(self) -> None:
+        await self.load_extension("src.cogs.core")
+        await self.load_extension("src.cogs.admin")
+        config = get_config()
+        guild_id = ((config.get("discord") or {}).get("guild_id"))
         if guild_id:
-            try:
-                guild_obj = discord.Object(id=int(guild_id))
-            except (TypeError, ValueError):
-                print(f"[SYNC] Invalid guild id in config: {guild_id!r}. Falling back to global sync.")
-                synced = await bot.tree.sync()
-                print(f"[SYNC] Registered {len(synced)} global commands.")
-            else:
-                bot.tree.copy_global_to(guild=guild_obj)
-                synced = await bot.tree.sync(guild=guild_obj)
-                print(f"[SYNC] Guild {guild_id}: {len(synced)} commands")
+            guild = discord.Object(id=int(guild_id))
+            self.tree.copy_global_to(guild=guild)
+            await self.tree.sync(guild=guild)
+            log.info("Slash-команды синхронизированы с гильдией %s", guild_id)
         else:
-            synced = await bot.tree.sync()
-            print(f"[SYNC] Registered {len(synced)} global commands.")
+            await self.tree.sync()
+            log.info("Slash-команды синхронизированы глобально")
 
-    bot.setup_hook = setup_hook
+    async def on_ready(self) -> None:
+        app_info = await self.application_info()
+        log.info("Бот авторизован как %s", self.user)
+        log.info("Приглашение: %s", discord.utils.oauth_url(app_info.id, scopes=("bot", "applications.commands")))
 
-    bot.run(token)
+
+def load_token(config: dict[str, Any]) -> str:
+    token = ((config.get("discord") or {}).get("token"))
+    if not token:
+        raise RuntimeError("В config.json не указан discord.token")
+    return token
+
+
+async def run_bot(bot: BrothelBot, token: str) -> None:
+    try:
+        await bot.start(token)
+    finally:
+        if bot.is_closed():
+            return
+        await bot.close()
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
+    config = get_config()
+    token = load_token(config)
+    bot = BrothelBot()
+    try:
+        asyncio.run(run_bot(bot, token))
+    except discord.LoginFailure as exc:
+        log.error("Не удалось авторизоваться: %s. Проверьте discord.token в config.json.", exc)
+        sys.exit(1)
+    except discord.HTTPException as exc:
+        log.error("API Discord вернул ошибку при запуске бота: %s", exc)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
     main()
-
