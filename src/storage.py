@@ -91,3 +91,7 @@ def brothel_leaderboard(limit: int = 10):
 
 def girl_leaderboard(limit: int = 10):
     return _SERVICE.gather_girl_top(limit)
+
+
+def get_config() -> dict:
+    return _SERVICE.get_config()
