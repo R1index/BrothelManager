@@ -2,10 +2,11 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from src import assets_util
 from src.game.services import GameService
-from src.models import BrothelState, Girl, Job
+from src.models import BrothelState, Girl, Job, Player, now_ts
 from src.game.repository import DataStore
 
 
@@ -93,6 +94,61 @@ class ConfigOverridesTests(unittest.TestCase):
     def test_jobs_per_level_influences_market_size(self):
         market = self.service.generate_market(uid=42, forced_level=1)
         self.assertEqual(len(market.jobs), 4)
+
+
+class ResolveJobTests(unittest.TestCase):
+    def setUp(self):
+        self.service = GameService()
+        self.job = Job(
+            job_id="job-test",
+            demand_main="Human",
+            demand_level=1,
+            demand_sub="VAGINAL",
+            demand_sub_level=0,
+            pay=60,
+            difficulty=1,
+        )
+
+    def _make_player(self) -> tuple[Player, Girl, BrothelState]:
+        girl = Girl(
+            uid="g-resolve",
+            base_id="base",
+            name="Resolve Tester",
+            rarity="R",
+            health=90,
+            health_max=100,
+            stamina=80,
+            stamina_max=100,
+            lust=80,
+            lust_max=100,
+        )
+        for name in girl.skills:
+            girl.skills[name]["level"] = 3 if name == "Human" else 0
+        for name in girl.subskills:
+            girl.subskills[name]["level"] = 1 if name == "VAGINAL" else 0
+        old_ts = now_ts() - 3600
+        girl.stamina_last_ts = old_ts
+        girl.lust_last_ts = old_ts
+
+        player = Player(user_id=99, girls=[girl])
+        brothel = player.ensure_brothel()
+        brothel.cleanliness = 70
+        brothel.morale = 80
+        brothel.comfort_level = 3
+        brothel.last_tick_ts = now_ts() - 5400
+        return player, girl, brothel
+
+    def test_regen_uses_decayed_stats_after_idle(self):
+        player, girl, brothel = self._make_player()
+        initial_health = girl.health
+        initial_cleanliness = brothel.cleanliness
+
+        with patch("src.game.services.random.random", side_effect=[0.0, 0.5, 0.99]):
+            result = self.service.resolve_job(player, self.job, girl)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(girl.health, initial_health)
+        self.assertLessEqual(brothel.cleanliness, initial_cleanliness - 6)
 
 
 if __name__ == "__main__":
