@@ -761,14 +761,32 @@ class GameService:
                 training_focus_type = "any"
                 training_focus = None
 
-        xp_multiplier = 1.0 + training_bonus_used
+        overall_xp_multiplier = 1.0
+        main_xp_multiplier = 1.0
+        sub_xp_multiplier = 1.0
+
+        if training_bonus_used > 0:
+            bonus_multiplier = 1.0 + training_bonus_used
+            focus_type_norm = (training_focus_type or "").lower()
+            focus_name_norm = (training_focus or "").lower() if training_focus else None
+
+            if focus_type_norm == "any":
+                overall_xp_multiplier = bonus_multiplier
+            elif focus_type_norm == "main":
+                current_main = (job.demand_main or "").lower()
+                if focus_name_norm is None or focus_name_norm == current_main:
+                    main_xp_multiplier = bonus_multiplier
+            elif focus_type_norm == "sub" and sub_name:
+                current_sub = sub_name.lower()
+                if focus_name_norm is None or focus_name_norm == current_sub:
+                    sub_xp_multiplier = bonus_multiplier
 
         base_xp_gain = 8 + job.difficulty * 5
         if success:
             base_xp_gain += max(0, info["main_lvl"] - job.demand_level) * 2
         else:
             base_xp_gain = max(4, base_xp_gain // 2)
-        girl.exp += int(base_xp_gain * xp_multiplier)
+        girl.exp += int(base_xp_gain * overall_xp_multiplier)
         while girl.level < 9999 and girl.exp >= level_xp_threshold(girl.level):
             girl.exp -= level_xp_threshold(girl.level)
             girl.level += 1
@@ -784,13 +802,17 @@ class GameService:
 
         main_mul = pref_multiplier(girl.prefs_skills, job.demand_main)
         base_main_xp = 6 + job.difficulty * 2 + max(0, info["main_lvl"] - job.demand_level) * 3
-        main_xp = int(base_main_xp * main_mul * (1.0 if success else 0.4) * xp_multiplier)
+        main_xp = int(
+            base_main_xp * main_mul * (1.0 if success else 0.4) * main_xp_multiplier
+        )
         add_skill_xp(girl.skills, job.demand_main, main_xp)
 
         if sub_name:
             sub_mul = pref_multiplier(girl.prefs_subskills, sub_name)
             base_sub_xp = 4 + job.difficulty * 2 + max(0, sub_lvl - sub_need) * 3
-            sub_xp = int(base_sub_xp * sub_mul * (1.0 if success else 0.4) * xp_multiplier)
+            sub_xp = int(
+                base_sub_xp * sub_mul * (1.0 if success else 0.4) * sub_xp_multiplier
+            )
             add_skill_xp(girl.subskills, sub_name, sub_xp)
 
         if reward > 0:
@@ -834,14 +856,14 @@ class GameService:
             lust_xp_gain += 2
         if injured:
             lust_xp_gain = max(2, lust_xp_gain - 1)
-        girl.gain_lust_xp(int(lust_xp_gain * xp_multiplier))
+        girl.gain_lust_xp(int(lust_xp_gain))
 
         endurance_xp_gain = max(1, int(stamina_cost * (1.1 if success else 0.7)) + job.difficulty * (3 if success else 2))
-        girl.gain_endurance_xp(int(endurance_xp_gain * xp_multiplier))
+        girl.gain_endurance_xp(int(endurance_xp_gain))
         vitality_xp_gain = 2 + job.difficulty * (3 if success else 2)
         if injured:
             vitality_xp_gain += max(1, injury_amount // 4)
-        girl.gain_vitality_xp(int(vitality_xp_gain * xp_multiplier))
+        girl.gain_vitality_xp(int(vitality_xp_gain))
 
         brothel.register_job_outcome(success, injured, job, reward)
         brothel_diff = {

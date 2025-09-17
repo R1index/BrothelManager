@@ -138,6 +138,16 @@ class ResolveJobTests(unittest.TestCase):
         brothel.last_tick_ts = now_ts() - 5400
         return player, girl, brothel
 
+    def _xp_snapshot(self, girl: Girl) -> dict[str, int]:
+        return {
+            "exp": girl.exp,
+            "main": girl.skills["Human"]["xp"],
+            "sub": girl.subskills["VAGINAL"]["xp"],
+            "lust": girl.lust_xp,
+            "endurance": girl.endurance_xp,
+            "vitality": girl.vitality_xp,
+        }
+
     def test_regen_uses_decayed_stats_after_idle(self):
         player, girl, brothel = self._make_player()
         initial_health = girl.health
@@ -149,6 +159,33 @@ class ResolveJobTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(girl.health, initial_health)
         self.assertLessEqual(brothel.cleanliness, initial_cleanliness - 6)
+
+    def test_main_training_bonus_only_boosts_main_skill_xp(self):
+        player_plain, girl_plain, _ = self._make_player()
+        player_trained, girl_trained, _ = self._make_player()
+
+        before_plain = self._xp_snapshot(girl_plain)
+        before_trained = self._xp_snapshot(girl_trained)
+
+        girl_trained.grant_training_bonus("mentor", 0.5, "main", "Human")
+
+        with patch("src.game.services.random.random", side_effect=[0.0, 0.5, 0.99]):
+            self.service.resolve_job(player_plain, self.job, girl_plain)
+
+        with patch("src.game.services.random.random", side_effect=[0.0, 0.5, 0.99]):
+            self.service.resolve_job(player_trained, self.job, girl_trained)
+
+        after_plain = self._xp_snapshot(girl_plain)
+        after_trained = self._xp_snapshot(girl_trained)
+
+        plain_delta = {key: after_plain[key] - before_plain[key] for key in before_plain}
+        trained_delta = {
+            key: after_trained[key] - before_trained[key] for key in before_trained
+        }
+
+        self.assertGreater(trained_delta["main"], plain_delta["main"])
+        for key in ("exp", "sub", "lust", "endurance", "vitality"):
+            self.assertEqual(trained_delta[key], plain_delta[key])
 
 
 if __name__ == "__main__":
