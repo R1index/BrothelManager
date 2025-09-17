@@ -171,14 +171,12 @@ class GameService:
             return prefix, None
         return prefix, counter
 
-    def _alloc_girl_uid(self, base_id: str | int, girls: Iterable[Girl] | None = None) -> str:
-        normalized_base = self._normalize_base_id(base_id)
-        used: set[int] = set()
-        if girls is None:
-            girls_iter: Iterable[Girl | dict] = ()
-        else:
-            girls_iter = girls
-        for existing in girls_iter:
+    def _collect_uid_usage(self, girls: Iterable[Girl | dict] | None) -> dict[str, set[int]]:
+        usage: dict[str, set[int]] = {}
+        if not girls:
+            return usage
+
+        for existing in girls:
             if isinstance(existing, Girl):
                 existing_uid = existing.uid
                 existing_base = existing.base_id
@@ -190,25 +188,71 @@ class GameService:
 
             prefix, counter = self._split_uid_counter(existing_uid)
             existing_base_norm = self._normalize_base_id(existing_base)
+            stripped_uid = existing_uid.strip() if isinstance(existing_uid, str) else ""
 
-            matches_base = False
-            if normalized_base:
-                if prefix == normalized_base or existing_base_norm == normalized_base:
-                    matches_base = True
+            keys = {existing_base_norm or "", prefix or ""}
+            for key in keys:
+                used = usage.setdefault(key, set())
+                if counter is not None:
+                    used.add(counter)
+                elif stripped_uid == key:
+                    used.add(1)
+
+        return usage
+
+    def _alloc_girl_uid(
+        self,
+        base_id: str | int,
+        girls: Iterable[Girl] | None = None,
+        uid_usage: dict[str, set[int]] | None = None,
+    ) -> str:
+        normalized_base = self._normalize_base_id(base_id)
+        key = normalized_base or ""
+
+        if uid_usage is not None:
+            used = uid_usage.setdefault(key, set())
+        else:
+            used: set[int] = set()
+            girls_iter: Iterable[Girl | dict]
+            if girls is None:
+                girls_iter = ()
             else:
-                if prefix == "" or existing_base_norm == "":
-                    matches_base = True
-            if not matches_base:
-                continue
+                girls_iter = girls
+            for existing in girls_iter:
+                if isinstance(existing, Girl):
+                    existing_uid = existing.uid
+                    existing_base = existing.base_id
+                elif isinstance(existing, dict):
+                    existing_uid = existing.get("uid")
+                    existing_base = existing.get("base_id")
+                else:
+                    continue
 
-            if counter is not None:
-                used.add(counter)
-            elif isinstance(existing_uid, str) and existing_uid.strip() == normalized_base:
-                used.add(1)
+                prefix, counter = self._split_uid_counter(existing_uid)
+                existing_base_norm = self._normalize_base_id(existing_base)
+
+                matches_base = False
+                if normalized_base:
+                    if prefix == normalized_base or existing_base_norm == normalized_base:
+                        matches_base = True
+                else:
+                    if prefix == "" or existing_base_norm == "":
+                        matches_base = True
+                if not matches_base:
+                    continue
+
+                if counter is not None:
+                    used.add(counter)
+                elif isinstance(existing_uid, str) and existing_uid.strip() == normalized_base:
+                    used.add(1)
 
         counter = 1
         while counter in used:
             counter += 1
+
+        if uid_usage is not None:
+            used.add(counter)
+
         if normalized_base:
             return f"{normalized_base}#{counter}"
         return f"#{counter}"
@@ -282,7 +326,8 @@ class GameService:
         player.renown = starter_renown
         brothel.renown = starter_renown
 
-        girl_uid = self._alloc_girl_uid(base_entry["id"], player.girls)
+        uid_usage = self._collect_uid_usage(player.girls)
+        girl_uid = self._alloc_girl_uid(base_entry["id"], player.girls, uid_usage=uid_usage)
         girl = self._make_girl_from_catalog_entry(base_entry, uid=girl_uid)
         player.girls.append(girl)
 
@@ -323,22 +368,25 @@ class GameService:
         if not entries:
             raise RuntimeError("Girls catalog is empty.")
 
+        weights = [
+            {"R": 70, "SR": 20, "SSR": 9, "UR": 1}.get(entry.get("rarity", "R"), 1)
+            for entry in entries
+        ]
+
         def pick_entry() -> dict:
-            weights = [
-                {"R": 70, "SR": 20, "SSR": 9, "UR": 1}.get(entry.get("rarity", "R"), 1)
-                for entry in entries
-            ]
-            choice = random.choices(range(len(entries)), weights=weights, k=1)[0]
-            return entries[choice]
+            return random.choices(entries, weights=weights, k=1)[0]
 
         original_currency = player.currency
         original_girls_len = len(player.girls)
         added: List[Girl] = []
+        uid_usage = self._collect_uid_usage(player.girls)
 
         try:
             for _ in range(times):
                 base_entry = pick_entry()
-                girl_uid = self._alloc_girl_uid(base_entry["id"], player.girls)
+                girl_uid = self._alloc_girl_uid(
+                    base_entry["id"], player.girls, uid_usage=uid_usage
+                )
                 girl = self._make_girl_from_catalog_entry(base_entry, uid=girl_uid)
                 player.girls.append(girl)
                 added.append(girl)

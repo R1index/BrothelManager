@@ -24,6 +24,8 @@ class DataStore:
         self.market_dir = self.data_dir / "markets"
         self.catalog_path = self.data_dir / "girls_catalog.json"
         self.assets_dir = self.base_dir / "assets" / "girls"
+        self._catalog_cache: dict | None = None
+        self._catalog_mtime: int | None = None
         self._ensure_dirs()
 
     def _coerce_path(self, value: Path | str, relative_to: Path) -> Path:
@@ -93,6 +95,8 @@ class DataStore:
             self.catalog_path = self._coerce_path(catalog_value, base_dir)
         else:
             self.catalog_path = self.data_dir / "girls_catalog.json"
+        self._catalog_cache = None
+        self._catalog_mtime = None
 
         if assets_value is not None:
             self.assets_dir = self._coerce_path(assets_value, base_dir)
@@ -125,9 +129,23 @@ class DataStore:
         return self.market_dir / f"{uid}.json"
 
     def load_catalog(self) -> dict:
-        data = self.read_json(self.catalog_path)
+        path = self.catalog_path
+        try:
+            mtime = path.stat().st_mtime_ns
+        except FileNotFoundError:
+            self._catalog_cache = None
+            self._catalog_mtime = None
+            raise FileNotFoundError(f"Catalog not found: {path}")
+
+        if self._catalog_cache is not None and self._catalog_mtime == mtime:
+            return self._catalog_cache
+
+        data = self.read_json(path)
         if data is None:
-            raise FileNotFoundError(f"Catalog not found: {self.catalog_path}")
+            raise FileNotFoundError(f"Catalog not found: {path}")
+
+        self._catalog_cache = data
+        self._catalog_mtime = mtime
         return data
 
     def iter_user_ids(self) -> Iterable[int]:
