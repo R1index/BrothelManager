@@ -754,7 +754,7 @@ class TrainingManageView(discord.ui.View):
             self.student_page += 1
         await self._refresh(interaction, update_embed=False)
 
-    @discord.ui.button(label="◀ Page", style=discord.ButtonStyle.secondary, row=0)
+    @discord.ui.button(label="◀ Page", style=discord.ButtonStyle.secondary, row=4)
     async def page_prev(
         self,
         interaction: discord.Interaction,
@@ -766,7 +766,7 @@ class TrainingManageView(discord.ui.View):
             self.page_index -= 1
         await self._refresh(interaction, update_embed=True)
 
-    @discord.ui.button(label="Page ▶", style=discord.ButtonStyle.secondary, row=0)
+    @discord.ui.button(label="Page ▶", style=discord.ButtonStyle.secondary, row=4)
     async def page_next(
         self,
         interaction: discord.Interaction,
@@ -778,7 +778,7 @@ class TrainingManageView(discord.ui.View):
             self.page_index += 1
         await self._refresh(interaction, update_embed=True)
 
-    @discord.ui.button(label="Roster ◀", style=discord.ButtonStyle.secondary, row=0)
+    @discord.ui.button(label="Roster ◀", style=discord.ButtonStyle.secondary, row=4)
     async def roster_prev(
         self,
         interaction: discord.Interaction,
@@ -795,7 +795,7 @@ class TrainingManageView(discord.ui.View):
             self.roster_page -= 1
         await self._refresh(interaction, update_embed=True)
 
-    @discord.ui.button(label="Roster ▶", style=discord.ButtonStyle.secondary, row=0)
+    @discord.ui.button(label="Roster ▶", style=discord.ButtonStyle.secondary, row=4)
     async def roster_next(
         self,
         interaction: discord.Interaction,

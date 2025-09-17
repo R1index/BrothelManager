@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import discord, json, os
+import logging
 from typing import Any, Dict, Optional
 from discord import app_commands
 from discord.ext import commands
@@ -14,6 +15,9 @@ def load_cfg() -> Dict[str, Any]:
     if isinstance(data, dict):
         return data
     return {}
+
+log = logging.getLogger(__name__)
+
 
 class Admin(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -82,12 +86,25 @@ class Admin(commands.Cog):
             is_owner = await self.bot.is_owner(interaction.user)
 
         if not is_owner:
-            await interaction.response.send_message(
-                "Only the bot application owner can do this.", ephemeral=True
+            sender = (
+                interaction.response.send_message
+                if not interaction.response.is_done()
+                else interaction.followup.send
             )
+            await sender("Only the bot application owner can do this.", ephemeral=True)
             return
 
-        report = await self._sync_commands(report_changes=True)
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True, thinking=True)
+
+        try:
+            report = await self._sync_commands(report_changes=True)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            log.exception("Failed to sync application commands")
+            await interaction.followup.send(
+                f"Failed to sync commands: {exc}", ephemeral=True
+            )
+            return
         message: str
         if report is None:
             message = "No commands were synchronized."
@@ -105,7 +122,7 @@ class Admin(commands.Cog):
                         f"Invalid guild id {invalid_value!r}; globally synced {count} commands instead."
                     )
 
-        await interaction.response.send_message(message, ephemeral=True)
+        await interaction.followup.send(message, ephemeral=True)
 
     @app_commands.command(name="invite", description="Get bot invite link (applications.commands + bot)")
     async def invite(self, interaction: discord.Interaction) -> None:
