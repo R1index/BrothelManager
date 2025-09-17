@@ -1,6 +1,6 @@
 import os
 import time
-from typing import Any, Optional, Tuple
+from typing import Any, Optional, Tuple, Callable
 
 import discord
 from discord import app_commands
@@ -232,6 +232,84 @@ class Core(commands.Cog):
 
         return pl, brothel
 
+    async def _handle_brothel_compat(
+        self,
+        interaction: discord.Interaction,
+        pl,
+        brothel,
+        action: app_commands.Choice[str] | None,
+        facility: app_commands.Choice[str] | None,
+        coins: int | None,
+    ) -> None:
+        action_val = normalize_brothel_action(action)
+        facility_val = self._resolve_brothel_facility(facility)
+        invest = max(0, coins or 0)
+
+        if action_val == "view":
+            embed = self._build_brothel_embed(interaction.user.display_name, pl)
+            await self._save_and_respond(interaction, pl, embed=embed, ephemeral=True)
+            return
+
+        if action_val == "upgrade" and not facility_val:
+            await self._save_and_respond(
+                interaction,
+                pl,
+                content="Select which facility to upgrade.",
+                ephemeral=True,
+            )
+            return
+
+        if invest <= 0:
+            await self._save_and_respond(
+                interaction,
+                pl,
+                content="Specify how many coins to spend.",
+                ephemeral=True,
+            )
+            return
+
+        if pl.currency < invest:
+            await self._save_and_respond(
+                interaction,
+                pl,
+                content=f"Not enough coins. Need {EMOJI_COIN} {invest}.",
+                ephemeral=True,
+            )
+            return
+
+        handlers: dict[str, Callable[[], list[str]]] = {
+            "upgrade": lambda: self._brothel_upgrade_notes(brothel, facility_val, invest)
+            if facility_val
+            else [],
+            "maintain": lambda: self._brothel_maintain_notes(brothel, invest),
+            "promote": lambda: self._brothel_promote_notes(brothel, invest),
+            "expand": lambda: self._brothel_expand_notes(brothel, invest),
+        }
+
+        if action_val not in handlers:
+            await self._save_and_respond(
+                interaction,
+                pl,
+                content="Unknown action.",
+                ephemeral=True,
+            )
+            return
+
+        notes = handlers[action_val]()
+        pl.currency -= invest
+        notes = [f"{EMOJI_COIN} Spent {invest} coins.", *notes]
+
+        brothel.ensure_bounds()
+        pl.renown = brothel.renown
+
+        embed = self._build_brothel_embed(
+            interaction.user.display_name,
+            pl,
+            notes=notes,
+        )
+        await self._save_and_respond(interaction, pl, embed=embed, ephemeral=True)
+
+
     @staticmethod
     def _resolve_brothel_facility(
         facility: app_commands.Choice[str] | None,
@@ -405,220 +483,127 @@ class Core(commands.Cog):
         bonus += progress_ratio * gap_bonus
         return min(0.6, bonus)
 
-    async def _handle_train_list(self, interaction, pl, brothel) -> None:
-        if not brothel.training:
-            await self._save_and_respond(
-                interaction,
-                pl,
-                content="No active mentorships.",
-                ephemeral=True,
-            )
-            return
-
+    def _training_overview_lines(self, pl, brothel) -> list[str]:
         lines: list[str] = []
+        training = getattr(brothel, "training", None)
+        if not training:
+            return lines
+
         now_ts = time.time()
-        for assignment in brothel.training:
+        for assignment in training:
             mentor_girl = pl.get_girl(assignment.mentor_uid)
             student_girl = pl.get_girl(assignment.student_uid)
             if not mentor_girl or not student_girl:
                 continue
             minutes = max(0, int((now_ts - assignment.since_ts) // 60))
-            focus_text = self._format_training_focus(assignment.focus_type, assignment.focus)
+            focus_text = self._format_training_focus(
+                assignment.focus_type,
+                assignment.focus,
+            )
             lines.append(
                 f"📘 **{mentor_girl.name}** → **{student_girl.name}** • {focus_text} • {minutes} min"
             )
 
-        message = "\n".join(lines[:20]) if lines else "No active mentorships."
-        await self._save_and_respond(
-            interaction,
-            pl,
-            content=message,
-            ephemeral=True,
-        )
+        return lines
 
-    async def _handle_train_assign(
+    def _assign_training(
         self,
-        interaction,
         pl,
         brothel,
-        mentor: Optional[str],
-        student: Optional[str],
-        focus_type: Optional[app_commands.Choice[str]],
-        main_skill: Optional[app_commands.Choice[str]],
-        sub_skill: Optional[app_commands.Choice[str]],
-    ) -> None:
-        mentor_uid = (mentor or "").strip()
-        student_uid = (student or "").strip()
+        mentor_uid: Optional[str],
+        student_uid: Optional[str],
+        focus_type: Optional[str],
+        focus_name: Optional[str],
+    ) -> tuple[bool, str]:
+        mentor_uid = (mentor_uid or "").strip()
+        student_uid = (student_uid or "").strip()
 
         if not mentor_uid or not student_uid:
-            await self._save_and_respond(
-                interaction,
-                pl,
-                content="Specify mentor and student UIDs.",
-                ephemeral=True,
-            )
-            return
+            return False, "Specify mentor and student UIDs."
 
         mentor_girl = pl.get_girl(mentor_uid)
         student_girl = pl.get_girl(student_uid)
         if not mentor_girl or not student_girl:
-            await self._save_and_respond(
-                interaction,
-                pl,
-                content="Mentor or student not found.",
-                ephemeral=True,
-            )
-            return
+            return False, "Mentor or student not found."
 
         if mentor_girl.uid == student_girl.uid:
-            await self._save_and_respond(
-                interaction,
-                pl,
-                content="Mentor and student must be different.",
-                ephemeral=True,
-            )
-            return
+            return False, "Mentor and student must be different."
 
         if brothel.training_for(mentor_girl.uid) or brothel.training_for(student_girl.uid):
-            await self._save_and_respond(
-                interaction,
-                pl,
-                content="One of the girls is already in training.",
-                ephemeral=True,
-            )
-            return
+            return False, "One of the girls is already in training."
 
         if not self._mentor_more_experienced(mentor_girl, student_girl):
-            await self._save_and_respond(
-                interaction,
-                pl,
-                content="Mentor must be more experienced than the student.",
-                ephemeral=True,
-            )
-            return
+            return False, "Mentor must be more experienced than the student."
 
-        focus_type_val, focus_name, error = self._resolve_training_focus(
-            focus_type,
-            main_skill,
-            sub_skill,
-        )
-        if error:
-            await self._save_and_respond(
-                interaction,
-                pl,
-                content=error,
-                ephemeral=True,
-            )
-            return
+        focus_type_val = (focus_type or "").lower() or None
+        focus_name_val = focus_name or None
 
-        if not focus_type_val or not focus_name:
-            await self._save_and_respond(
-                interaction,
-                pl,
-                content="Select a concrete skill for the mentorship.",
-                ephemeral=True,
-            )
-            return
+        if not focus_type_val or not focus_name_val:
+            return False, "Select a concrete skill for the mentorship."
 
-        if self._is_focus_blocked(mentor_girl, focus_type_val, focus_name) or self._is_focus_blocked(
+        if focus_type_val == "main" and focus_name_val not in MAIN_SKILLS:
+            return False, "Unknown main skill."
+        if focus_type_val == "sub" and focus_name_val not in SUB_SKILLS:
+            return False, "Unknown sub-skill."
+
+        if self._is_focus_blocked(mentor_girl, focus_type_val, focus_name_val) or self._is_focus_blocked(
             student_girl,
             focus_type_val,
-            focus_name,
+            focus_name_val,
         ):
             message = (
                 "Blocked skills cannot be taught or studied."
                 if focus_type_val == "main"
                 else "Blocked sub-skills cannot be taught or studied."
             )
-            await self._save_and_respond(
-                interaction,
-                pl,
-                content=message,
-                ephemeral=True,
-            )
-            return
+            return False, message
 
         assignment = brothel.start_training(
             mentor_girl.uid,
             student_girl.uid,
             focus_type_val,
-            focus_name,
+            focus_name_val,
         )
         if not assignment:
-            await self._save_and_respond(
-                interaction,
-                pl,
-                content="Unable to start training.",
-                ephemeral=True,
-            )
-            return
+            return False, "Unable to start training."
 
-        focus_text = self._format_training_focus(focus_type_val, focus_name)
-        await self._save_and_respond(
-            interaction,
-            pl,
-            content=(
-                f"📘 **{mentor_girl.name}** is now mentoring **{student_girl.name}** in {focus_text}."
-            ),
-            ephemeral=True,
+        focus_text = self._format_training_focus(focus_type_val, focus_name_val)
+        return (
+            True,
+            f"📘 **{mentor_girl.name}** is now mentoring **{student_girl.name}** in {focus_text}.",
         )
 
-    async def _handle_train_finish(
+    def _finish_training(
         self,
-        interaction,
         pl,
         brothel,
-        mentor: Optional[str],
-        student: Optional[str],
-    ) -> None:
-        target_uid = (student or mentor or "").strip()
+        target_uid: Optional[str],
+    ) -> tuple[bool, str]:
+        target_uid = (target_uid or "").strip()
         if not target_uid:
-            await self._save_and_respond(
-                interaction,
-                pl,
-                content="Specify mentor or student UID to finish training.",
-                ephemeral=True,
-            )
-            return
+            return False, "Specify mentor or student UID to finish training."
 
         assignment = brothel.training_for(target_uid)
         if not assignment:
-            await self._save_and_respond(
-                interaction,
-                pl,
-                content="No mentorship found for that UID.",
-                ephemeral=True,
-            )
-            return
+            return False, "No mentorship found for that UID."
 
         mentor_girl = pl.get_girl(assignment.mentor_uid)
         student_girl = pl.get_girl(assignment.student_uid)
         if not mentor_girl or not student_girl:
             brothel.stop_training(assignment.mentor_uid)
-            await self._save_and_respond(
-                interaction,
-                pl,
-                content="Girls not found.",
-                ephemeral=True,
-            )
-            return
+            return False, "Girls not found."
 
         since_ts = getattr(assignment, "since_ts", None) or 0.0
         elapsed_seconds = max(0.0, time.time() - since_ts)
         if elapsed_seconds < MIN_TRAINING_SECONDS:
             elapsed_minutes = elapsed_seconds / 60
             required_minutes = int(MIN_TRAINING_SECONDS // 60)
-            await self._save_and_respond(
-                interaction,
-                pl,
-                content=(
-                    "Training is too short "
-                    f"({elapsed_minutes:.1f} minutes). Let them train for at least "
-                    f"{required_minutes} minutes before finishing."
-                ),
-                ephemeral=True,
+            return (
+                False,
+                "Training is too short "
+                f"({elapsed_minutes:.1f} minutes). Let them train for at least "
+                f"{required_minutes} minutes before finishing.",
             )
-            return
 
         brothel.stop_training(assignment.mentor_uid)
         bonus = self._calculate_training_bonus(assignment, mentor_girl, student_girl)
@@ -635,12 +620,25 @@ class Core(commands.Cog):
         target_line = (
             "next job" if focus_kind_norm == "any" else f"next {focus_text} job"
         )
+        return (
+            True,
+            f"📘 Training finished. **{student_girl.name}** gains +{int(bonus * 100)}% XP on {target_line}.",
+        )
+
+    async def _handle_train_finish(
+        self,
+        interaction: discord.Interaction,
+        pl,
+        brothel,
+        mentor: Optional[str],
+        student: Optional[str],
+    ) -> None:
+        target_uid = (student or mentor or "").strip()
+        success, message = self._finish_training(pl, brothel, target_uid)
         await self._save_and_respond(
             interaction,
             pl,
-            content=(
-                f"📘 Training finished. **{student_girl.name}** gains +{int(bonus * 100)}% XP on {target_line}."
-            ),
+            content=message,
             ephemeral=True,
         )
 
@@ -719,24 +717,6 @@ class Core(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="brothel", description="Manage your establishment facilities")
-    @app_commands.choices(
-        action=[
-            app_commands.Choice(name="View status", value="view"),
-            app_commands.Choice(name="Upgrade facility", value="upgrade"),
-            app_commands.Choice(name="Maintain cleanliness", value="maintain"),
-            app_commands.Choice(name="Promote services", value="promote"),
-            app_commands.Choice(name="Expand rooms", value="expand"),
-        ]
-    )
-    @app_commands.choices(
-        facility=[
-            app_commands.Choice(name="Comfort", value="comfort"),
-            app_commands.Choice(name="Hygiene", value="hygiene"),
-            app_commands.Choice(name="Security", value="security"),
-            app_commands.Choice(name="Allure", value="allure"),
-        ]
-    )
-    @app_commands.describe(coins="Coins to invest into the selected action")
     async def brothel(
         self,
         interaction: discord.Interaction,
@@ -748,73 +728,19 @@ class Core(commands.Cog):
         if not pl:
             return
 
-        action_val = normalize_brothel_action(action)
-        facility_val = self._resolve_brothel_facility(facility)
-        invest = max(0, coins or 0)
-
-        if action_val == "view":
-            embed = self._build_brothel_embed(interaction.user.display_name, pl)
-            await self._save_and_respond(interaction, pl, embed=embed, ephemeral=True)
+        if action is not None or facility is not None or coins is not None:
+            await self._handle_brothel_compat(interaction, pl, brothel, action, facility, coins)
             return
 
-        if action_val == "upgrade" and not facility_val:
-            await self._save_and_respond(
-                interaction,
-                pl,
-                content="Select which facility to upgrade.",
-                ephemeral=True,
-            )
-            return
-
-        if invest <= 0:
-            await self._save_and_respond(
-                interaction,
-                pl,
-                content="Specify how many coins to spend.",
-                ephemeral=True,
-            )
-            return
-
-        if pl.currency < invest:
-            await self._save_and_respond(
-                interaction,
-                pl,
-                content=f"Not enough coins. Need {EMOJI_COIN} {invest}.",
-                ephemeral=True,
-            )
-            return
-
-        handlers = {
-            "upgrade": lambda: self._brothel_upgrade_notes(brothel, facility_val, invest)
-            if facility_val
-            else [],
-            "maintain": lambda: self._brothel_maintain_notes(brothel, invest),
-            "promote": lambda: self._brothel_promote_notes(brothel, invest),
-            "expand": lambda: self._brothel_expand_notes(brothel, invest),
-        }
-
-        if action_val not in handlers:
-            await self._save_and_respond(
-                interaction,
-                pl,
-                content="Unknown action.",
-                ephemeral=True,
-            )
-            return
-
-        notes = handlers[action_val]()
-        pl.currency -= invest
-        notes = [f"{EMOJI_COIN} Spent {invest} coins.", *notes]
-
-        brothel.ensure_bounds()
-        pl.renown = brothel.renown
-
-        embed = self._build_brothel_embed(
-            interaction.user.display_name,
-            pl,
-            notes=notes,
+        save_player(pl)
+        view = BrothelManageView(
+            cog=self,
+            user_name=interaction.user.display_name,
+            invoker_id=interaction.user.id,
+            player=pl,
+            brothel=brothel,
         )
-        await self._save_and_respond(interaction, pl, embed=embed, ephemeral=True)
+        await view.start(interaction)
 
     @app_commands.command(name="gacha", description="Roll the gacha (100 coins per roll)")
     @app_commands.describe(times="How many times to roll (1-10)")
@@ -849,32 +775,10 @@ class Core(commands.Cog):
         )
 
     @app_commands.command(name="train", description="Manage mentorship training assignments")
-    @app_commands.choices(
-        action=[
-            app_commands.Choice(name="List", value="list"),
-            app_commands.Choice(name="Assign", value="assign"),
-            app_commands.Choice(name="Finish", value="finish"),
-        ],
-        focus_type=[
-            app_commands.Choice(name="Main skill", value="main"),
-            app_commands.Choice(name="Sub-skill", value="sub"),
-        ],
-        main_skill=[app_commands.Choice(name=name, value=name) for name in MAIN_SKILLS],
-        sub_skill=[
-            app_commands.Choice(name=name.title(), value=name) for name in SUB_SKILLS
-        ],
-    )
-    @app_commands.describe(
-        mentor="Mentor girl UID",
-        student="Student girl UID",
-        focus_type="Focus category for the mentorship",
-        main_skill="Main skill to train",
-        sub_skill="Sub-skill to train",
-    )
     async def train(
         self,
         interaction: discord.Interaction,
-        action: app_commands.Choice[str],
+        action: app_commands.Choice[str] | None = None,
         mentor: Optional[str] = None,
         student: Optional[str] = None,
         focus_type: Optional[app_commands.Choice[str]] = None,
@@ -885,41 +789,97 @@ class Core(commands.Cog):
         if not pl:
             return
 
-        action_val = (choice_value(action) or "list").lower()
+        if action is not None:
+            action_val = (choice_value(action) or "list").lower()
+            if action_val == "list":
+                lines = self._training_overview_lines(pl, brothel)
+                message = "\n".join(lines[:20]) if lines else "No active mentorships."
+                await self._save_and_respond(
+                    interaction,
+                    pl,
+                    content=message,
+                    ephemeral=True,
+                )
+                return
 
-        if action_val == "list":
-            await self._handle_train_list(interaction, pl, brothel)
-            return
+            if action_val == "assign":
+                mentor_uid = (mentor or "").strip()
+                student_uid = (student or "").strip()
+                if not mentor_uid or not student_uid:
+                    await self._save_and_respond(
+                        interaction,
+                        pl,
+                        content="Specify mentor and student UIDs.",
+                        ephemeral=True,
+                    )
+                    return
 
-        if action_val == "assign":
-            await self._handle_train_assign(
+                focus_type_val, focus_name, error = self._resolve_training_focus(
+                    focus_type,
+                    main_skill,
+                    sub_skill,
+                )
+                if error:
+                    await self._save_and_respond(
+                        interaction,
+                        pl,
+                        content=error,
+                        ephemeral=True,
+                    )
+                    return
+
+                if not focus_type_val or not focus_name:
+                    await self._save_and_respond(
+                        interaction,
+                        pl,
+                        content="Select a concrete skill for the mentorship.",
+                        ephemeral=True,
+                    )
+                    return
+
+                success, message = self._assign_training(
+                    pl,
+                    brothel,
+                    mentor_uid,
+                    student_uid,
+                    focus_type_val,
+                    focus_name,
+                )
+                await self._save_and_respond(
+                    interaction,
+                    pl,
+                    content=message,
+                    ephemeral=True,
+                )
+                return
+
+            if action_val == "finish":
+                await self._handle_train_finish(
+                    interaction,
+                    pl,
+                    brothel,
+                    mentor,
+                    student,
+                )
+                return
+
+            await self._save_and_respond(
                 interaction,
                 pl,
-                brothel,
-                mentor,
-                student,
-                focus_type,
-                main_skill,
-                sub_skill,
+                content="Unknown action.",
+                ephemeral=True,
             )
             return
 
-        if action_val == "finish":
-            await self._handle_train_finish(
-                interaction,
-                pl,
-                brothel,
-                mentor,
-                student,
-            )
-            return
-
-        await self._save_and_respond(
-            interaction,
-            pl,
-            content="Unknown action.",
-            ephemeral=True,
+        save_player(pl)
+        view = TrainingManageView(
+            cog=self,
+            user_name=interaction.user.display_name,
+            invoker_id=interaction.user.id,
+            player=pl,
+            brothel=brothel,
         )
+        await view.start(interaction)
 
     @app_commands.command(name="girls", description="List your girls")
     async def girls(self, interaction: discord.Interaction):
@@ -1300,6 +1260,740 @@ class Core(commands.Cog):
             )
         else:
             await interaction.response.send_message(f"{EMOJI_X} {res['reason']}", ephemeral=True)
+
+
+
+class BrothelManageView(discord.ui.View):
+    """Interactive manager for the /brothel command."""
+
+    ACTION_LABELS = {
+        "view": "View status",
+        "upgrade": "Upgrade facility",
+        "maintain": "Maintain cleanliness",
+        "promote": "Promote services",
+        "expand": "Expand rooms",
+    }
+    COIN_PRESETS = (25, 50, 100, 250, 500, 1000, 2000)
+
+    def __init__(
+        self,
+        *,
+        cog: "Core",
+        user_name: str,
+        invoker_id: int,
+        player,
+        brothel,
+    ) -> None:
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.user_name = user_name
+        self.invoker_id = invoker_id
+        self.player = player
+        self.brothel = brothel
+        self.selected_action = "view"
+        self.selected_facility: str | None = None
+        self.invest_amount: int = 0
+        self._message: discord.Message | None = None
+
+        self.action_select = self.ActionSelect(self)
+        self.facility_select = self.FacilitySelect(self)
+        self.coin_select = self.CoinSelect(self)
+
+        self.add_item(self.action_select)
+        self.add_item(self.facility_select)
+        self.add_item(self.coin_select)
+        self._update_components()
+
+    async def start(self, interaction: discord.Interaction) -> None:
+        embed = self._build_embed()
+        await interaction.response.send_message(embed=embed, view=self, ephemeral=True)
+        try:
+            self._message = await interaction.original_response()
+        except Exception:
+            self._message = None
+
+    async def _check_owner(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.invoker_id:
+            await interaction.response.send_message("This isn't your panel.", ephemeral=True)
+            return False
+        return True
+
+    def _build_coin_options(self) -> list[discord.SelectOption]:
+        coins = max(0, int(getattr(self.player, "currency", 0)))
+        amounts: list[int] = []
+        for preset in self.COIN_PRESETS:
+            if preset <= coins:
+                amounts.append(int(preset))
+        if coins:
+            half = coins // 2
+            if half and half not in amounts:
+                amounts.append(half)
+            if coins not in amounts:
+                amounts.append(coins)
+        options: list[discord.SelectOption] = [
+            discord.SelectOption(label="No investment", value="0", description="Only view status"),
+        ]
+        for amt in sorted(set(amounts))[:24]:
+            label = f"{amt} coins"
+            description = None
+            if coins and amt == coins:
+                label = f"All coins ({coins})"
+                description = "Spend everything from your wallet"
+            options.append(
+                discord.SelectOption(
+                    label=label,
+                    value=str(amt),
+                    description=description,
+                )
+            )
+        if len(options) == 1:
+            options.append(
+                discord.SelectOption(label="No coins available", value="0", description="Wallet is empty")
+            )
+        return options[:25]
+
+    def _action_summary(self) -> str:
+        label = self.ACTION_LABELS.get(self.selected_action, self.selected_action.title())
+        if self.selected_action == "upgrade" and self.selected_facility:
+            icon, facility_label = FACILITY_INFO[self.selected_facility]
+            summary = f"{label}: {icon} {facility_label}"
+        elif self.selected_action == "view":
+            summary = label
+        else:
+            summary = label
+        if self.selected_action != "view" and self.invest_amount > 0:
+            summary += f" • {EMOJI_COIN} {self.invest_amount}"
+        return summary
+
+    def _build_embed(self, *, notes: list[str] | None = None) -> discord.Embed:
+        embed = self.cog._build_brothel_embed(self.user_name, self.player, notes)
+        if self.selected_action != "view":
+            embed.add_field(
+                name="Selected action",
+                value=self._action_summary(),
+                inline=False,
+            )
+        return embed
+
+    async def _refresh(self, interaction: discord.Interaction, *, notes: list[str] | None = None) -> None:
+        embed = self._build_embed(notes=notes)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    def _update_components(self) -> None:
+        label = self.ACTION_LABELS.get(self.selected_action, self.selected_action.title())
+        self.action_select.placeholder = label
+
+        if self.selected_action == "upgrade":
+            self.facility_select.disabled = False
+            if self.selected_facility:
+                icon, facility_label = FACILITY_INFO[self.selected_facility]
+                self.facility_select.placeholder = f"{icon} {facility_label}"
+            else:
+                self.facility_select.placeholder = "Choose facility"
+        else:
+            self.facility_select.disabled = True
+            self.facility_select.placeholder = "Facility (upgrade only)"
+
+        if self.selected_action == "view":
+            self.coin_select.disabled = True
+            self.coin_select.placeholder = "No coins needed"
+            self.invest_amount = 0
+        else:
+            self.coin_select.disabled = False
+            if self.invest_amount > 0:
+                self.coin_select.placeholder = f"{self.invest_amount} coins selected"
+            else:
+                self.coin_select.placeholder = "Select coins to invest"
+        self.coin_select.refresh_options()
+
+    def _reset_after_action(self) -> None:
+        self.selected_action = "view"
+        self.selected_facility = None
+        self.invest_amount = 0
+        self._update_components()
+
+    async def _run_action(self, interaction: discord.Interaction) -> None:
+        if self.selected_action == "view":
+            await self._refresh(interaction)
+            return
+
+        invest = max(0, self.invest_amount)
+        if self.selected_action == "upgrade" and not self.selected_facility:
+            await self._refresh(interaction, notes=["Select a facility to upgrade."])
+            return
+
+        if invest <= 0:
+            await self._refresh(interaction, notes=["Select how many coins to invest."])
+            return
+
+        if self.player.currency < invest:
+            await self._refresh(
+                interaction,
+                notes=[f"Not enough coins. Need {EMOJI_COIN} {invest}."]
+            )
+            return
+
+        handlers: dict[str, Callable[[], list[str]]] = {
+            "upgrade": lambda: self.cog._brothel_upgrade_notes(self.brothel, self.selected_facility, invest)
+            if self.selected_facility
+            else [],
+            "maintain": lambda: self.cog._brothel_maintain_notes(self.brothel, invest),
+            "promote": lambda: self.cog._brothel_promote_notes(self.brothel, invest),
+            "expand": lambda: self.cog._brothel_expand_notes(self.brothel, invest),
+        }
+
+        if self.selected_action not in handlers:
+            await self._refresh(interaction, notes=["Unknown action."])
+            return
+
+        notes = handlers[self.selected_action]()
+        self.player.currency -= invest
+        notes = [f"{EMOJI_COIN} Spent {invest} coins.", *notes]
+
+        self.brothel.ensure_bounds()
+        self.player.renown = self.brothel.renown
+        save_player(self.player)
+
+        self._reset_after_action()
+        await self._refresh(interaction, notes=notes)
+
+    class ActionSelect(discord.ui.Select):
+        def __init__(self, parent: "BrothelManageView") -> None:
+            self.view: BrothelManageView
+            options = [
+                discord.SelectOption(label=label, value=value)
+                for value, label in BrothelManageView.ACTION_LABELS.items()
+            ]
+            super().__init__(
+                placeholder=BrothelManageView.ACTION_LABELS["view"],
+                min_values=1,
+                max_values=1,
+                options=options,
+                row=0,
+            )
+            self.view = parent
+
+        async def callback(self, interaction: discord.Interaction) -> None:
+            if not await self.view._check_owner(interaction):
+                return
+            self.view.selected_action = self.values[0]
+            if self.view.selected_action == "view":
+                self.view.invest_amount = 0
+            self.view._update_components()
+            await self.view._refresh(interaction)
+
+    class FacilitySelect(discord.ui.Select):
+        def __init__(self, parent: "BrothelManageView") -> None:
+            self.view: BrothelManageView
+            options = [
+                discord.SelectOption(label=f"{icon} {label}", value=key)
+                for key, (icon, label) in FACILITY_INFO.items()
+            ]
+            super().__init__(
+                placeholder="Facility (upgrade only)",
+                min_values=1,
+                max_values=1,
+                options=options,
+                disabled=True,
+                row=1,
+            )
+            self.view = parent
+
+        async def callback(self, interaction: discord.Interaction) -> None:
+            if not await self.view._check_owner(interaction):
+                return
+            self.view.selected_facility = self.values[0]
+            icon, label = FACILITY_INFO[self.view.selected_facility]
+            self.placeholder = f"{icon} {label}"
+            await self.view._refresh(interaction)
+
+    class CoinSelect(discord.ui.Select):
+        def __init__(self, parent: "BrothelManageView") -> None:
+            self.view: BrothelManageView
+            super().__init__(
+                placeholder="Select coins to invest",
+                min_values=1,
+                max_values=1,
+                options=parent._build_coin_options(),
+                disabled=True,
+                row=2,
+            )
+            self.view = parent
+
+        def refresh_options(self) -> None:
+            self.options = self.view._build_coin_options()
+
+        async def callback(self, interaction: discord.Interaction) -> None:
+            if not await self.view._check_owner(interaction):
+                return
+            try:
+                value = int(self.values[0])
+            except ValueError:
+                value = 0
+            self.view.invest_amount = max(0, value)
+            if self.view.invest_amount > 0:
+                self.placeholder = f"{self.view.invest_amount} coins selected"
+            else:
+                self.placeholder = "No coins selected"
+            await self.view._refresh(interaction)
+
+    @discord.ui.button(label="Execute", style=discord.ButtonStyle.success, emoji="✅", row=3)
+    async def execute_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if not await self._check_owner(interaction):
+            return
+        await self._run_action(interaction)
+
+    @discord.ui.button(label="Close", style=discord.ButtonStyle.danger, emoji="✖️", row=3)
+    async def close_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if not await self._check_owner(interaction):
+            return
+        self.stop()
+        await interaction.response.edit_message(view=None)
+
+    async def on_timeout(self) -> None:
+        if self._message is None:
+            return
+        try:
+            await self._message.edit(view=None)
+        except Exception:
+            pass
+
+
+class TrainingManageView(discord.ui.View):
+    """Interactive manager for the /train command."""
+
+    ACTION_LABELS = {
+        "list": "List mentorships",
+        "assign": "Assign mentorship",
+        "finish": "Finish mentorship",
+    }
+
+    def __init__(
+        self,
+        *,
+        cog: "Core",
+        user_name: str,
+        invoker_id: int,
+        player,
+        brothel,
+    ) -> None:
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.user_name = user_name
+        self.invoker_id = invoker_id
+        self.player = player
+        self.brothel = brothel
+        self.current_action = "list"
+        self.selected_mentor: str | None = None
+        self.selected_student: str | None = None
+        self.selected_focus_type: str | None = None
+        self.selected_focus_name: str | None = None
+        self.selected_assignment_uid: str | None = None
+        self._message: discord.Message | None = None
+
+        self.action_select = self.ActionSelect(self)
+        self.mentor_select = self.MentorSelect(self)
+        self.student_select = self.StudentSelect(self)
+        self.focus_select = self.FocusSelect(self)
+        self.assignment_select = self.AssignmentSelect(self)
+
+        self.add_item(self.action_select)
+        self.add_item(self.mentor_select)
+        self.add_item(self.student_select)
+        self.add_item(self.focus_select)
+        self.add_item(self.assignment_select)
+        self._update_components()
+
+    async def start(self, interaction: discord.Interaction) -> None:
+        embed = self._build_embed()
+        await interaction.response.send_message(embed=embed, view=self, ephemeral=True)
+        try:
+            self._message = await interaction.original_response()
+        except Exception:
+            self._message = None
+
+    async def _check_owner(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.invoker_id:
+            await interaction.response.send_message("This isn't your panel.", ephemeral=True)
+            return False
+        return True
+
+    def _girl_name(self, uid: str | None) -> str | None:
+        if not uid:
+            return None
+        girl = self.player.get_girl(uid)
+        return girl.name if girl else None
+
+    def _assignment_label(self, mentor_uid: str | None) -> str | None:
+        if not mentor_uid:
+            return None
+        assignment = self.brothel.training_for(mentor_uid)
+        if not assignment:
+            return None
+        mentor = self.player.get_girl(assignment.mentor_uid)
+        student = self.player.get_girl(assignment.student_uid)
+        if not mentor or not student:
+            return None
+        focus_text = self.cog._format_training_focus(assignment.focus_type, assignment.focus)
+        return f"{mentor.name} → {student.name} • {focus_text}"
+
+    def _build_girl_options(self, *, exclude_uid: str | None = None) -> list[discord.SelectOption]:
+        girls = sorted(
+            list(getattr(self.player, "girls", [])),
+            key=lambda g: (-getattr(g, "level", 0), g.name),
+        )
+        options: list[discord.SelectOption] = []
+        for girl in girls:
+            if exclude_uid and girl.uid == exclude_uid:
+                continue
+            if self.brothel.training_for(girl.uid):
+                continue
+            label = f"{girl.name} (L{getattr(girl, 'level', 0)})"
+            options.append(
+                discord.SelectOption(
+                    label=label[:100],
+                    value=girl.uid,
+                    description=f"UID: {girl.uid}",
+                )
+            )
+            if len(options) >= 25:
+                break
+        return options
+
+    def _build_assignment_options(self) -> list[discord.SelectOption]:
+        options: list[discord.SelectOption] = []
+        training = getattr(self.brothel, "training", [])
+        for assignment in training:
+            mentor = self.player.get_girl(assignment.mentor_uid)
+            student = self.player.get_girl(assignment.student_uid)
+            if not mentor or not student:
+                continue
+            focus_text = self.cog._format_training_focus(assignment.focus_type, assignment.focus)
+            label = f"{mentor.name} → {student.name}"
+            options.append(
+                discord.SelectOption(
+                    label=label[:100],
+                    value=assignment.mentor_uid,
+                    description=focus_text[:100],
+                )
+            )
+            if len(options) >= 25:
+                break
+        return options
+
+    def _refresh_assignment_options(self) -> None:
+        options = self._build_assignment_options()
+        self.assignment_select.options = options or [self.assignment_select.EMPTY_OPTION]
+
+    def _update_components(self) -> None:
+        label = self.ACTION_LABELS.get(self.current_action, self.current_action.title())
+        self.action_select.placeholder = label
+
+        self.mentor_select.refresh_options()
+        self.student_select.refresh_options()
+        self._refresh_assignment_options()
+
+        is_assign = self.current_action == "assign"
+        is_finish = self.current_action == "finish"
+
+        mentor_has_options = any(opt.value != "none" for opt in self.mentor_select.options)
+        student_has_options = any(opt.value != "none" for opt in self.student_select.options)
+        assignment_has_options = any(opt.value != "none" for opt in self.assignment_select.options)
+
+        self.mentor_select.disabled = not is_assign or not mentor_has_options
+        self.student_select.disabled = not is_assign or not student_has_options
+        self.focus_select.disabled = not is_assign or not (mentor_has_options and student_has_options)
+        self.assignment_select.disabled = not is_finish or not assignment_has_options
+
+        mentor_name = self._girl_name(self.selected_mentor)
+        self.mentor_select.placeholder = (
+            f"Mentor: {mentor_name}" if mentor_name else "Select mentor"
+        )
+
+        student_name = self._girl_name(self.selected_student)
+        self.student_select.placeholder = (
+            f"Student: {student_name}" if student_name else "Select student"
+        )
+
+        if self.selected_focus_type and self.selected_focus_name:
+            focus_text = self.cog._format_training_focus(
+                self.selected_focus_type,
+                self.selected_focus_name,
+            )
+            self.focus_select.placeholder = f"Focus: {focus_text}"
+        else:
+            self.focus_select.placeholder = "Select skill focus"
+
+        assignment_label = self._assignment_label(self.selected_assignment_uid)
+        if assignment_label:
+            self.assignment_select.placeholder = assignment_label[:100]
+        else:
+            self.assignment_select.placeholder = "Select mentorship"
+
+    def _action_summary(self) -> str:
+        label = self.ACTION_LABELS.get(self.current_action, self.current_action.title())
+        if self.current_action == "assign":
+            mentor = self._girl_name(self.selected_mentor) or "mentor?"
+            student = self._girl_name(self.selected_student) or "student?"
+            if self.selected_focus_type and self.selected_focus_name:
+                focus_text = self.cog._format_training_focus(
+                    self.selected_focus_type,
+                    self.selected_focus_name,
+                )
+            else:
+                focus_text = "select focus"
+            return f"{label}: {mentor} → {student} • {focus_text}"
+        if self.current_action == "finish":
+            assignment_label = self._assignment_label(self.selected_assignment_uid) or "select mentorship"
+            return f"{label}: {assignment_label}"
+        return label
+
+    def _build_embed(self, *, notes: list[str] | None = None) -> discord.Embed:
+        lines = self.cog._training_overview_lines(self.player, self.brothel)
+        overview = "\n".join(lines) if lines else "No active mentorships."
+        embed = discord.Embed(
+            title=f"{self.user_name}'s Mentorships",
+            color=0x60A5FA,
+        )
+        embed.add_field(name=f"{EMOJI_COIN} Coins", value=str(self.player.currency))
+        embed.add_field(name="Active mentorships", value=overview, inline=False)
+        if self.current_action != "list":
+            embed.add_field(
+                name="Selected action",
+                value=self._action_summary(),
+                inline=False,
+            )
+        if notes:
+            embed.add_field(name="Status", value="\n".join(notes), inline=False)
+        return embed
+
+    async def _refresh(self, interaction: discord.Interaction, *, notes: list[str] | None = None) -> None:
+        embed = self._build_embed(notes=notes)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    class ActionSelect(discord.ui.Select):
+        def __init__(self, parent: "TrainingManageView") -> None:
+            self.view: TrainingManageView
+            options = [
+                discord.SelectOption(label=label, value=value)
+                for value, label in TrainingManageView.ACTION_LABELS.items()
+            ]
+            super().__init__(
+                placeholder=TrainingManageView.ACTION_LABELS["list"],
+                min_values=1,
+                max_values=1,
+                options=options,
+                row=0,
+            )
+            self.view = parent
+
+        async def callback(self, interaction: discord.Interaction) -> None:
+            if not await self.view._check_owner(interaction):
+                return
+            self.view.current_action = self.values[0]
+            if self.view.current_action != "assign":
+                self.view.selected_mentor = None
+                self.view.selected_student = None
+                self.view.selected_focus_type = None
+                self.view.selected_focus_name = None
+            if self.view.current_action != "finish":
+                self.view.selected_assignment_uid = None
+            self.view._update_components()
+            await self.view._refresh(interaction)
+
+    class MentorSelect(discord.ui.Select):
+        EMPTY_OPTION = discord.SelectOption(label="No eligible girls", value="none")
+
+        def __init__(self, parent: "TrainingManageView") -> None:
+            self.view: TrainingManageView
+            options = parent._build_girl_options() or [self.EMPTY_OPTION]
+            super().__init__(
+                placeholder="Select mentor",
+                min_values=1,
+                max_values=1,
+                options=options,
+                row=1,
+            )
+            self.view = parent
+
+        def refresh_options(self) -> None:
+            options = self.view._build_girl_options(exclude_uid=self.view.selected_student)
+            self.options = options or [self.EMPTY_OPTION]
+
+        async def callback(self, interaction: discord.Interaction) -> None:
+            if not await self.view._check_owner(interaction):
+                return
+            value = self.values[0]
+            if value == "none":
+                await interaction.response.send_message("No available mentors.", ephemeral=True)
+                return
+            self.view.selected_mentor = value
+            mentor_name = self.view._girl_name(self.view.selected_mentor) or "Mentor"
+            self.placeholder = f"Mentor: {mentor_name}"
+            await self.view._refresh(interaction)
+
+    class StudentSelect(discord.ui.Select):
+        EMPTY_OPTION = discord.SelectOption(label="No eligible girls", value="none")
+
+        def __init__(self, parent: "TrainingManageView") -> None:
+            self.view: TrainingManageView
+            options = parent._build_girl_options() or [self.EMPTY_OPTION]
+            super().__init__(
+                placeholder="Select student",
+                min_values=1,
+                max_values=1,
+                options=options,
+                row=1,
+            )
+            self.view = parent
+
+        def refresh_options(self) -> None:
+            options = self.view._build_girl_options(exclude_uid=self.view.selected_mentor)
+            self.options = options or [self.EMPTY_OPTION]
+
+        async def callback(self, interaction: discord.Interaction) -> None:
+            if not await self.view._check_owner(interaction):
+                return
+            value = self.values[0]
+            if value == "none":
+                await interaction.response.send_message("No available students.", ephemeral=True)
+                return
+            self.view.selected_student = value
+            student_name = self.view._girl_name(self.view.selected_student) or "Student"
+            self.placeholder = f"Student: {student_name}"
+            await self.view._refresh(interaction)
+
+    class FocusSelect(discord.ui.Select):
+        def __init__(self, parent: "TrainingManageView") -> None:
+            self.view: TrainingManageView
+            options = [
+                discord.SelectOption(label=f"Main • {name}", value=f"main:{name}")
+                for name in MAIN_SKILLS
+            ] + [
+                discord.SelectOption(label=f"Sub • {name.title()}", value=f"sub:{name}")
+                for name in SUB_SKILLS
+            ]
+            super().__init__(
+                placeholder="Select skill focus",
+                min_values=1,
+                max_values=1,
+                options=options,
+                row=2,
+                disabled=True,
+            )
+            self.view = parent
+
+        async def callback(self, interaction: discord.Interaction) -> None:
+            if not await self.view._check_owner(interaction):
+                return
+            raw = self.values[0]
+            kind, _, name = raw.partition(":")
+            self.view.selected_focus_type = kind or None
+            self.view.selected_focus_name = name or None
+            focus_text = self.view.cog._format_training_focus(
+                self.view.selected_focus_type,
+                self.view.selected_focus_name,
+            )
+            self.placeholder = f"Focus: {focus_text}"
+            await self.view._refresh(interaction)
+
+    class AssignmentSelect(discord.ui.Select):
+        EMPTY_OPTION = discord.SelectOption(label="No active mentorships", value="none")
+
+        def __init__(self, parent: "TrainingManageView") -> None:
+            self.view: TrainingManageView
+            options = parent._build_assignment_options() or [self.EMPTY_OPTION]
+            super().__init__(
+                placeholder="Select mentorship",
+                min_values=1,
+                max_values=1,
+                options=options,
+                row=3,
+                disabled=True,
+            )
+            self.view = parent
+
+        async def callback(self, interaction: discord.Interaction) -> None:
+            if not await self.view._check_owner(interaction):
+                return
+            value = self.values[0]
+            if value == "none":
+                await interaction.response.send_message("No mentorships to finish.", ephemeral=True)
+                return
+            self.view.selected_assignment_uid = value
+            assignment_label = self.view._assignment_label(self.view.selected_assignment_uid) or "Mentorship"
+            self.placeholder = assignment_label[:100]
+            await self.view._refresh(interaction)
+
+    @discord.ui.button(label="Execute", style=discord.ButtonStyle.success, emoji="✅", row=4)
+    async def execute_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if not await self._check_owner(interaction):
+            return
+
+        if self.current_action == "list":
+            lines = self.cog._training_overview_lines(self.player, self.brothel)
+            note = (
+                [f"Active mentorships: {len(lines)}"] if lines else ["No active mentorships."]
+            )
+            await self._refresh(interaction, notes=note)
+            return
+
+        if self.current_action == "assign":
+            if not self.selected_mentor or not self.selected_student:
+                await self._refresh(interaction, notes=["Select mentor and student first."])
+                return
+            if not (self.selected_focus_type and self.selected_focus_name):
+                await self._refresh(interaction, notes=["Select a skill focus for the mentorship."])
+                return
+            success, message = self.cog._assign_training(
+                self.player,
+                self.brothel,
+                self.selected_mentor,
+                self.selected_student,
+                self.selected_focus_type,
+                self.selected_focus_name,
+            )
+            notes = [message]
+            if success:
+                save_player(self.player)
+                self.selected_assignment_uid = None
+            self._update_components()
+            await self._refresh(interaction, notes=notes)
+            return
+
+        if self.current_action == "finish":
+            if not self.selected_assignment_uid:
+                await self._refresh(interaction, notes=["Select which mentorship to finish."])
+                return
+            success, message = self.cog._finish_training(
+                self.player,
+                self.brothel,
+                self.selected_assignment_uid,
+            )
+            notes = [message]
+            if success:
+                save_player(self.player)
+                self.selected_assignment_uid = None
+            self._update_components()
+            await self._refresh(interaction, notes=notes)
+            return
+
+        await self._refresh(interaction, notes=["Unknown action."])
+
+    @discord.ui.button(label="Close", style=discord.ButtonStyle.danger, emoji="✖️", row=4)
+    async def close_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if not await self._check_owner(interaction):
+            return
+        self.stop()
+        await interaction.response.edit_message(view=None)
+
+    async def on_timeout(self) -> None:
+        if self._message is None:
+            return
+        try:
+            await self._message.edit(view=None)
+        except Exception:
+            pass
 
 
 async def setup(bot: commands.Bot):
