@@ -808,7 +808,15 @@ class Player(BaseModel):
             else:
                 self.brothel = BrothelState()
         self.brothel.ensure_bounds()
-        self.brothel.sync_renown(self)
+        brothel_renown = int(getattr(self.brothel, "renown", 0) or 0)
+        player_renown = int(getattr(self, "renown", 0) or 0)
+
+        if player_renown <= 0 and brothel_renown > 0:
+            self.renown = brothel_renown
+            player_renown = brothel_renown
+
+        if player_renown > 0:
+            self.brothel.renown = player_renown
         return self.brothel
 
     @property

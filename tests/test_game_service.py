@@ -151,5 +151,80 @@ class ResolveJobTests(unittest.TestCase):
         self.assertLessEqual(brothel.cleanliness, initial_cleanliness - 6)
 
 
+class StarterPackRenownTests(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        self.addCleanup(lambda: assets_util.set_assets_dir(None))
+        self.base_path = Path(self.tmpdir.name)
+        self.store = DataStore(base_dir=self.base_path)
+
+        _write_config(
+            self.base_path,
+            {
+                "gacha": {
+                    "starter_girl_id": "starter",
+                    "starter_coins": 250,
+                }
+            },
+        )
+
+        catalog_payload = {
+            "girls": [
+                {
+                    "id": "starter",
+                    "name": "Starter Girl",
+                    "rarity": "R",
+                    "base": {
+                        "level": 1,
+                        "skills": {"Human": {"level": 1}},
+                        "subskills": {"VAGINAL": {"level": 0}},
+                    },
+                }
+            ]
+        }
+        catalog_path = self.store.catalog_path
+        catalog_path.parent.mkdir(parents=True, exist_ok=True)
+        catalog_path.write_text(json.dumps(catalog_payload), encoding="utf-8")
+
+        self.service = GameService(self.store)
+
+    def test_starter_pack_preserves_initial_renown(self):
+        player = self.service.grant_starter_pack(uid=123)
+
+        self.assertEqual(player.renown, 15)
+        self.assertEqual(player.brothel.renown, 15)
+
+        loaded = self.service.load_player(123)
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded.renown, 15)
+        self.assertEqual(loaded.brothel.renown, 15)
+
+    def test_legacy_popularity_restored_for_player(self):
+        payload = {
+            "user_id": 999,
+            "currency": 0,
+            "girls": [],
+            "brothel": {"popularity": 37, "rooms": 3},
+        }
+        path = self.store.user_path(999)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        player = self.service.load_player(999)
+        self.assertIsNotNone(player)
+        self.assertEqual(player.renown, 37)
+        self.assertEqual(player.brothel.renown, 37)
+
+        brothel = player.ensure_brothel()
+        self.assertEqual(player.renown, 37)
+        self.assertEqual(brothel.renown, 37)
+
+        self.service.save_player(player)
+        saved = self.store.read_json(self.store.user_path(999))
+        self.assertEqual(saved.get("reputation"), 37)
+        self.assertEqual((saved.get("brothel") or {}).get("popularity"), 37)
+
+
 if __name__ == "__main__":
     unittest.main()

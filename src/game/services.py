@@ -278,7 +278,9 @@ class GameService:
 
         player = Player(user_id=uid, currency=starter_coins, girls=[])
         brothel = player.ensure_brothel()
-        player.renown = brothel.renown
+        starter_renown = brothel.renown if brothel.renown > 0 else BrothelState().renown
+        player.renown = starter_renown
+        brothel.renown = starter_renown
 
         girl_uid = self._alloc_girl_uid(base_entry["id"], player.girls)
         girl = self._make_girl_from_catalog_entry(base_entry, uid=girl_uid)
