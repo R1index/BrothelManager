@@ -428,14 +428,20 @@ class GameService:
             demand_sub = random.choice(SUB_SKILLS)
             demand_sub_level = random.randint(0, max(1, level + 1))
             pay = 60 + demand_level * 22 + demand_sub_level * 18 + level * 12
-            difficulty = random.randint(1, 3 + level // 3)
+            max_difficulty = max(0, level)
+            allure_rolls = 1
             if brothel:
                 pay += brothel.allure_level * 18
                 pay += brothel.facility_level("comfort") * 10
                 pay += brothel.facility_level("security") * 6
                 pay += max(-30, int((brothel.cleanliness - 65) * 0.9))
                 pay += brothel.renown // 4
-                difficulty = min(5, difficulty + brothel.facility_level("allure") // 3)
+                allure_rolls = max(1, 1 + brothel.facility_level("allure") // 3)
+            difficulty = 0
+            for _ in range(allure_rolls):
+                roll = random.randint(0, max_difficulty)
+                if roll > difficulty:
+                    difficulty = roll
             jobs.append(
                 Job(
                     job_id=f"J{idx + 1}",
@@ -444,7 +450,7 @@ class GameService:
                     demand_sub=demand_sub,
                     demand_sub_level=demand_sub_level,
                     pay=pay,
-                    difficulty=max(1, difficulty),
+                    difficulty=difficulty,
                 )
             )
         return Market(user_id=uid, jobs=jobs, level=level)
