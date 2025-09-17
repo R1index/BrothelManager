@@ -116,5 +116,73 @@ class MarketWorkViewResultFormattingTests(unittest.TestCase):
         self.assertNotIn("Needs 0", combined)
 
 
+class MarketWorkViewJobOptionValueTests(unittest.TestCase):
+    def setUp(self):
+        self.player = Player(user_id=321)
+        self.market = Market(
+            user_id=321,
+            jobs=[
+                Job(
+                    job_id="duplicate",
+                    demand_main="Human",
+                    demand_level=1,
+                    demand_sub="VAGINAL",
+                    demand_sub_level=1,
+                    pay=50,
+                    difficulty=1,
+                ),
+                Job(
+                    job_id="duplicate",
+                    demand_main="Human",
+                    demand_level=1,
+                    demand_sub="ORAL",
+                    demand_sub_level=1,
+                    pay=60,
+                    difficulty=1,
+                ),
+                Job(
+                    job_id=" NONE ",
+                    demand_main="Beast",
+                    demand_level=2,
+                    demand_sub="ANAL",
+                    demand_sub_level=1,
+                    pay=70,
+                    difficulty=2,
+                ),
+                Job(
+                    job_id="x" * 140,
+                    demand_main="Human",
+                    demand_level=3,
+                    demand_sub="GROUP",
+                    demand_sub_level=2,
+                    pay=80,
+                    difficulty=2,
+                ),
+            ],
+        )
+
+        async def _create_view():
+            return MarketWorkView(
+                user_id=321,
+                invoker_id=321,
+                forced_level=None,
+                player=self.player,
+                market=self.market,
+            )
+
+        self.view = asyncio.run(_create_view())
+
+    def test_job_option_values_are_unique_and_short(self):
+        options = self.view.job_select.options
+        values = [opt.value for opt in options]
+
+        self.assertEqual(values.count("none"), 1)
+        self.assertEqual(len(values), len(set(values)))
+        self.assertTrue(all(len(val) <= 100 for val in values))
+
+        canonical_ids = [val for val in self.view._job_value_to_id.values() if val]
+        self.assertEqual(len(canonical_ids), len(set(canonical_ids)))
+
+
 if __name__ == "__main__":
     unittest.main()
