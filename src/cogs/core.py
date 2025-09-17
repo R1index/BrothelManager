@@ -72,6 +72,9 @@ from ..game.views import MarketWorkView, Paginator
 BROTHEL_ALLOWED_ACTIONS = {"view", "upgrade", "maintain", "promote", "expand"}
 
 
+MIN_TRAINING_SECONDS = 15 * 60
+
+
 def normalize_brothel_action(
     action: app_commands.Choice[str] | None,
 ) -> str:
@@ -379,7 +382,9 @@ class Core(commands.Cog):
 
     @classmethod
     def _calculate_training_bonus(cls, assignment, mentor_girl, student_girl) -> float:
-        duration_hours = max(0.1, (time.time() - assignment.since_ts) / 3600)
+        since_ts = getattr(assignment, "since_ts", None) or 0.0
+        duration_hours = max(0.0, (time.time() - since_ts) / 3600)
+        effective_hours = min(6.0, duration_hours)
         level_gap = max(0, getattr(mentor_girl, "level", 0) - getattr(student_girl, "level", 0))
         skill_gap = max(
             0,
@@ -391,10 +396,13 @@ class Core(commands.Cog):
             getattr(mentor_girl, "vitality_level", 0)
             - getattr(student_girl, "vitality_level", 0),
         )
-        bonus = 0.12 * min(6, duration_hours)
-        bonus += level_gap * 0.04
-        bonus += skill_gap * 0.002
-        bonus += vitality_gap * 0.01
+        progress_ratio = min(1.0, effective_hours / 1.0)
+        bonus = 0.12 * effective_hours
+        gap_bonus = 0.0
+        gap_bonus += level_gap * 0.04
+        gap_bonus += skill_gap * 0.002
+        gap_bonus += vitality_gap * 0.01
+        bonus += progress_ratio * gap_bonus
         return min(0.6, bonus)
 
     async def _handle_train_list(self, interaction, pl, brothel) -> None:
@@ -591,6 +599,23 @@ class Core(commands.Cog):
                 interaction,
                 pl,
                 content="Girls not found.",
+                ephemeral=True,
+            )
+            return
+
+        since_ts = getattr(assignment, "since_ts", None) or 0.0
+        elapsed_seconds = max(0.0, time.time() - since_ts)
+        if elapsed_seconds < MIN_TRAINING_SECONDS:
+            elapsed_minutes = elapsed_seconds / 60
+            required_minutes = int(MIN_TRAINING_SECONDS // 60)
+            await self._save_and_respond(
+                interaction,
+                pl,
+                content=(
+                    "Training is too short "
+                    f"({elapsed_minutes:.1f} minutes). Let them train for at least "
+                    f"{required_minutes} minutes before finishing."
+                ),
                 ephemeral=True,
             )
             return
