@@ -516,6 +516,21 @@ class BrothelState(BaseModel):
             cleaned_training.append(assign)
         self.training = cleaned_training
 
+    # ------------------------------------------------------------------
+    # Hygiene helpers
+    # ------------------------------------------------------------------
+
+    def hygiene_reduction_ratio(self) -> float:
+        level = max(1, int(self.hygiene_level))
+        return min(0.6, 0.05 * (level - 1))
+
+    def hygiene_decay_multiplier(self) -> float:
+        return 1.0 - self.hygiene_reduction_ratio()
+
+    def hygiene_restoration_multiplier(self) -> float:
+        level = max(1, int(self.hygiene_level))
+        return 1.0 + min(0.75, 0.05 * (level - 1))
+
     def facility_threshold(self, name: str) -> int:
         return facility_xp_threshold(self.facility_level(name))
 
@@ -559,20 +574,33 @@ class BrothelState(BaseModel):
         ticks = elapsed // 900
         if ticks <= 0:
             return
-        decay = int(ticks)
-        self.cleanliness = max(0, self.cleanliness - decay)
+        base_decay = int(ticks)
+        decay_multiplier = self.hygiene_decay_multiplier()
+        decay = max(0, int(round(base_decay * decay_multiplier)))
+        if decay > 0:
+            self.cleanliness = max(0, self.cleanliness - decay)
 
         morale_shift = 0
-        if self.cleanliness < 40:
-            morale_shift -= max(1, decay // 2)
-        elif self.cleanliness > 85:
+        if self.cleanliness < 40 and base_decay > 0:
+            base_penalty = max(1, base_decay // 2)
+            penalty = int(round(base_penalty * decay_multiplier))
+            if penalty <= 0 and decay > 0:
+                penalty = 1
+            morale_shift -= max(0, penalty)
+        elif self.cleanliness > 85 and decay > 0:
             morale_shift += max(1, decay // 3)
         self.morale = min(100, max(10, self.morale + morale_shift))
 
-        if self.cleanliness < 50:
-            self.renown = max(0, self.renown - max(1, decay // 3))
+        if self.cleanliness < 50 and base_decay > 0:
+            base_loss = max(1, base_decay // 3)
+            renown_loss = int(round(base_loss * decay_multiplier))
+            if renown_loss <= 0 and decay > 0:
+                renown_loss = 1
+            if renown_loss > 0:
+                self.renown = max(0, self.renown - renown_loss)
         else:
-            self.renown += int(decay // 5)
+            if decay > 0:
+                self.renown += int(decay // 5)
 
         remainder = elapsed % 900
         self.last_tick_ts = now - remainder
@@ -613,7 +641,8 @@ class BrothelState(BaseModel):
         pool_bonus = min(self.upkeep_pool, coins // 2)
         self.upkeep_pool -= pool_bonus
         effective = coins + pool_bonus * 2
-        restored = min(100 - self.cleanliness, max(1, effective // 5))
+        effective = int(round(effective * self.hygiene_restoration_multiplier()))
+        restored = min(100 - self.cleanliness, max(1, int(effective / 5)))
         self.cleanliness += restored
         morale = min(100 - self.morale, max(0, restored // 2))
         self.morale += morale
@@ -638,6 +667,7 @@ class BrothelState(BaseModel):
         wear = 1 + job.difficulty
         if job.demand_sub == "VAGINAL":
             wear += 1
+        wear = max(0, int(round(wear * self.hygiene_decay_multiplier())))
         self.cleanliness = max(0, self.cleanliness - wear)
         self.upkeep_pool = min(10000, self.upkeep_pool + max(0, reward // 30))
 
@@ -649,7 +679,8 @@ class BrothelState(BaseModel):
             self.morale = max(10, self.morale - morale_loss)
 
         if injured:
-            self.cleanliness = max(0, self.cleanliness - (2 + job.difficulty))
+            injury_wear = max(0, int(round((2 + job.difficulty) * self.hygiene_decay_multiplier())))
+            self.cleanliness = max(0, self.cleanliness - injury_wear)
             self.morale = max(10, self.morale - 3)
 
         self.ensure_bounds()
