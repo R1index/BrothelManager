@@ -278,17 +278,12 @@ class Core(commands.Cog):
         return notes
 
     def _brothel_promote_notes(self, brothel, invest: int) -> list[str]:
-        prev_renown = brothel.renown
         result = brothel.promote(invest)
         renown_gain = int(result.get("renown", 0))
         notes: list[str] = []
         if renown_gain > 0:
             notes.append(
                 f"{EMOJI_POPULARITY} Renown +{renown_gain} (now {brothel.renown})."
-            )
-        elif prev_renown >= 500:
-            notes.append(
-                f"{EMOJI_POPULARITY} Renown is already maxed at {brothel.renown}."
             )
         else:
             notes.append(
