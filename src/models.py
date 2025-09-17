@@ -466,6 +466,7 @@ class BrothelState(BaseModel):
     room_progress: int = 0
 
     last_tick_ts: int = Field(default_factory=now_ts)
+    decay_residual: float = 0.0
     training: List["TrainingAssignment"] = Field(default_factory=list)
 
     def ensure_bounds(self):
@@ -483,6 +484,10 @@ class BrothelState(BaseModel):
         self.room_progress = max(0, int(self.room_progress))
         if self.last_tick_ts <= 0:
             self.last_tick_ts = now_ts()
+        residual = float(getattr(self, "decay_residual", 0.0) or 0.0)
+        if residual < 0:
+            residual = 0.0
+        self.decay_residual = residual
         cleaned_training: list[TrainingAssignment] = []
         seen: set[tuple[str, str]] = set()
         for assign in list(self.training or []):
@@ -576,31 +581,25 @@ class BrothelState(BaseModel):
             return
         base_decay = int(ticks)
         decay_multiplier = self.hygiene_decay_multiplier()
-        decay = max(0, int(round(base_decay * decay_multiplier)))
-        if decay > 0:
-            self.cleanliness = max(0, self.cleanliness - decay)
+        decay_float = base_decay * decay_multiplier + float(self.decay_residual)
+        decay_int = max(0, int(decay_float))
+        self.decay_residual = max(0.0, decay_float - decay_int)
+        if decay_int > 0:
+            self.cleanliness = max(0, self.cleanliness - decay_int)
 
         morale_shift = 0
-        if self.cleanliness < 40 and base_decay > 0:
-            base_penalty = max(1, base_decay // 2)
-            penalty = int(round(base_penalty * decay_multiplier))
-            if penalty <= 0 and decay > 0:
-                penalty = 1
-            morale_shift -= max(0, penalty)
-        elif self.cleanliness > 85 and decay > 0:
-            morale_shift += max(1, decay // 3)
+        if self.cleanliness < 40 and decay_int > 0:
+            penalty = max(1, decay_int // 2)
+            morale_shift -= penalty
+        elif self.cleanliness > 85 and decay_int > 0:
+            morale_shift += max(1, decay_int // 3)
         self.morale = min(100, max(10, self.morale + morale_shift))
 
-        if self.cleanliness < 50 and base_decay > 0:
-            base_loss = max(1, base_decay // 3)
-            renown_loss = int(round(base_loss * decay_multiplier))
-            if renown_loss <= 0 and decay > 0:
-                renown_loss = 1
-            if renown_loss > 0:
-                self.renown = max(0, self.renown - renown_loss)
-        else:
-            if decay > 0:
-                self.renown += int(decay // 5)
+        if self.cleanliness < 50 and decay_int > 0:
+            renown_loss = max(1, decay_int // 3)
+            self.renown = max(0, self.renown - renown_loss)
+        elif decay_int > 0:
+            self.renown += int(decay_int // 5)
 
         remainder = elapsed % 900
         self.last_tick_ts = now - remainder
