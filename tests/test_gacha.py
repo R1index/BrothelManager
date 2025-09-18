@@ -5,6 +5,7 @@ from pathlib import Path
 
 from src.game.repository import DataStore
 from src.game.services import GameService
+from src.models import MAIN_SKILLS, SUB_SKILLS
 
 
 class GachaRollTestCase(unittest.TestCase):
@@ -32,8 +33,16 @@ class GachaRollTestCase(unittest.TestCase):
                     "rarity": "R",
                     "base": {
                         "level": 1,
-                        "skills": {},
-                        "subskills": {},
+                        "skills": {
+                            "Human": {"level": 2, "exp": 15},
+                            "Monster": 1,
+                            "Forbidden": {"level": 9},
+                        },
+                        "subskills": {
+                            "VAGINAL": {"level": 1, "xp": 5},
+                            "ANAL": {"level": 0, "exp": 8},
+                            "Weird": 3,
+                        },
                     },
                 }
             ]
@@ -92,6 +101,20 @@ class GachaRollTestCase(unittest.TestCase):
         stored = self.service.load_player(uid)
         self.assertIsNotNone(stored)
         self.assertEqual(stored.currency, new_starter_coins)
+
+    def test_catalog_skills_are_normalized(self):
+        uid = 999
+        player = self.service.grant_starter_pack(uid)
+        self.assertIsNotNone(player)
+        self.assertEqual(len(player.girls), 1)
+
+        girl = player.girls[0]
+        self.assertEqual(set(girl.skills), set(MAIN_SKILLS))
+        self.assertEqual(set(girl.subskills), set(SUB_SKILLS))
+        self.assertEqual(girl.skills["Human"], {"level": 2, "xp": 15})
+        self.assertEqual(girl.skills["Monster"], {"level": 1, "xp": 0})
+        self.assertEqual(girl.subskills["ANAL"], {"level": 0, "xp": 8})
+        self.assertEqual(girl.subskills["VAGINAL"], {"level": 1, "xp": 5})
 
 
 if __name__ == "__main__":

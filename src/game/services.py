@@ -156,12 +156,12 @@ class GameService:
             skills_raw = girl.get("skills") or {}
             if not isinstance(skills_raw, dict):
                 skills_raw = {}
-            girl["skills"] = normalize_skill_map(skills_raw)
+            girl["skills"] = normalize_skill_map(skills_raw, MAIN_SKILLS)
 
             subskills_raw = girl.get("subskills") or {}
             if not isinstance(subskills_raw, dict):
                 subskills_raw = {}
-            girl["subskills"] = normalize_skill_map(subskills_raw)
+            girl["subskills"] = normalize_skill_map(subskills_raw, SUB_SKILLS)
 
             girl["prefs_skills"] = normalize_prefs(girl.get("prefs_skills", {}), MAIN_SKILLS)
             girl["prefs_subskills"] = normalize_prefs(girl.get("prefs_subskills", {}), SUB_SKILLS)
@@ -299,8 +299,8 @@ class GameService:
         image_url = base.get("image_url", "")
 
         base_level = int(base.get("base", {}).get("level", 1))
-        base_skills = normalize_skill_map(base.get("base", {}).get("skills", {}))
-        base_subskills = normalize_skill_map(base.get("base", {}).get("subskills", {}))
+        base_skills = normalize_skill_map(base.get("base", {}).get("skills", {}), MAIN_SKILLS)
+        base_subskills = normalize_skill_map(base.get("base", {}).get("subskills", {}), SUB_SKILLS)
 
         bio = base.get("bio", {}) or {}
         prefs = base.get("prefs", {}) or {}
