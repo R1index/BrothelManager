@@ -662,6 +662,15 @@ class BrothelState(BaseModel):
         return {"renown": gained, "morale": morale}
 
     def register_job_outcome(self, success: bool, injured: bool, job: "Job", reward: int) -> Dict[str, int]:
+        """Применить последствия работы и вернуть дельты основных показателей."""
+
+        tracked_before = {
+            "cleanliness": int(self.cleanliness),
+            "morale": int(self.morale),
+            "renown": int(self.renown),
+            "upkeep": int(self.upkeep_pool),
+        }
+
         reward = max(0, int(reward))
         wear = 1 + job.difficulty
         if job.demand_sub == "VAGINAL":
@@ -683,6 +692,18 @@ class BrothelState(BaseModel):
             self.morale = max(10, self.morale - 3)
 
         self.ensure_bounds()
+
+        tracked_after = {
+            "cleanliness": int(self.cleanliness),
+            "morale": int(self.morale),
+            "renown": int(self.renown),
+            "upkeep": int(self.upkeep_pool),
+        }
+
+        return {
+            name: tracked_after[name] - tracked_before[name]
+            for name in tracked_after
+        }
 
     def next_room_cost(self) -> int:
         base = 200
