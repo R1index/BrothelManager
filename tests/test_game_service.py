@@ -7,12 +7,69 @@ from unittest.mock import patch
 
 from src import assets_util
 from src.game.services import GameService
-from src.models import BrothelState, Girl, Job, Player, now_ts
+from src.models import (
+    BrothelState,
+    Girl,
+    Job,
+    MAIN_SKILLS,
+    Player,
+    SUB_SKILLS,
+    now_ts,
+)
 from src.game.repository import DataStore
 
 
 def _write_config(base: Path, payload: dict) -> None:
     (base / "config.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+class SkillNormalizationTests(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.base_path = Path(self.tmpdir.name)
+        self.store = DataStore(self.base_path)
+        self.service = GameService(self.store)
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_load_player_filters_unknown_keys(self):
+        raw_player = {
+            "user_id": 1,
+            "currency": 42,
+            "girls": [
+                {
+                    "uid": "g001#1",
+                    "base_id": "g001",
+                    "name": "Legacy",
+                    "rarity": "R",
+                    "skills": {
+                        "Human": {"level": 3, "exp": 20},
+                        "Monster": {"level": 1, "xp": 5},
+                        "Forbidden": {"level": 7},
+                    },
+                    "subskills": {
+                        "VAGINAL": {"level": 1, "xp": 4},
+                        "ANAL": 2,
+                        "Unknown": 5,
+                    },
+                }
+            ],
+        }
+
+        self.store.write_json(self.store.user_path(1), raw_player)
+
+        player = self.service.load_player(1)
+        self.assertIsNotNone(player)
+        self.assertEqual(len(player.girls), 1)
+
+        girl = player.girls[0]
+        self.assertEqual(set(girl.skills), set(MAIN_SKILLS))
+        self.assertEqual(set(girl.subskills), set(SUB_SKILLS))
+        self.assertEqual(girl.skills["Human"], {"level": 3, "xp": 20})
+        self.assertEqual(girl.skills["Monster"], {"level": 1, "xp": 5})
+        self.assertEqual(girl.subskills["ANAL"], {"level": 2, "xp": 0})
+        self.assertEqual(girl.subskills["VAGINAL"], {"level": 1, "xp": 4})
 
 
 class EvaluateJobTests(unittest.TestCase):

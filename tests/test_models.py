@@ -1,6 +1,39 @@
 import unittest
 
-from src.models import BrothelState, Job, PROMOTE_COINS_PER_RENOWN, now_ts
+from src.models import (
+    BrothelState,
+    Job,
+    MAIN_SKILLS,
+    PROMOTE_COINS_PER_RENOWN,
+    SUB_SKILLS,
+    normalize_skill_map,
+    now_ts,
+)
+
+
+class SkillNormalizationTests(unittest.TestCase):
+    def test_normalize_skill_map_filters_unknown_keys(self):
+        raw_main = {
+            "Human": {"level": 2, "exp": 15},
+            "Monster": 1,
+            "Forbidden": {"level": 7},
+        }
+        normalized_main = normalize_skill_map(raw_main, MAIN_SKILLS)
+
+        self.assertEqual(set(normalized_main), set(MAIN_SKILLS))
+        self.assertEqual(normalized_main["Human"], {"level": 2, "xp": 15})
+        self.assertEqual(normalized_main["Monster"], {"level": 1, "xp": 0})
+
+        raw_sub = {
+            "VAGINAL": {"level": 1, "xp": 5},
+            "ANAL": {"level": 0, "exp": 3},
+            "Unknown": 4,
+        }
+        normalized_sub = normalize_skill_map(raw_sub, SUB_SKILLS)
+
+        self.assertEqual(set(normalized_sub), set(SUB_SKILLS))
+        self.assertEqual(normalized_sub["ANAL"], {"level": 0, "xp": 3})
+        self.assertNotIn("Unknown", normalized_sub)
 
 
 class BrothelPromotionTests(unittest.TestCase):

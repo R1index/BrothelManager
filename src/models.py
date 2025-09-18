@@ -85,24 +85,27 @@ def facility_xp_threshold(level: int) -> int:
 # Skill helpers (canonical structure: {'level': int, 'xp': int})
 # -----------------------------------------------------------------------------
 
-def normalize_skill_map(raw: Dict[str, Any]) -> Dict[str, Dict[str, int]]:
-    """
-    Normalize skill dict to {'level': int, 'xp': int}.
+def normalize_skill_map(raw: Dict[str, Any], allowed_names: Iterable[str]) -> Dict[str, Dict[str, int]]:
+    """Normalize skill dict to ``{'level': int, 'xp': int}`` for known names only.
+
     Accepts legacy formats:
-      - ints: {"Human": 2, ...}
-      - dicts with 'exp': {"Human": {"level": 2, "exp": 10}}
-    Missing skills are filled with zeros.
+      - ints: ``{"Human": 2, ...}``
+      - dicts with ``exp``: ``{"Human": {"level": 2, "exp": 10}}``
+
+    Keys not listed in ``allowed_names`` are ignored. Missing skills are filled
+    with zero values.
     """
     result: Dict[str, Dict[str, int]] = {}
-    for name in MAIN_SKILLS + SUB_SKILLS:
-        v = (raw or {}).get(name, 0)
+    source = raw if isinstance(raw, dict) else {}
+    for name in allowed_names:
+        v = source.get(name, 0)
         if isinstance(v, dict):
             lvl = int(v.get("level", 0))
             # migrate 'exp' -> 'xp' if present
-            xp  = int(v.get("xp", v.get("exp", 0)))
+            xp = int(v.get("xp", v.get("exp", 0)))
         else:
             lvl = int(v)
-            xp  = 0
+            xp = 0
         result[name] = {"level": max(0, lvl), "xp": max(0, xp)}
     return result
 
@@ -280,8 +283,8 @@ class Girl(BaseModel):
 
     def normalize_skill_structs(self):
         """Normalize legacy data structures for skills/subskills and preferences."""
-        self.skills    = normalize_skill_map(self.skills)
-        self.subskills = normalize_skill_map(self.subskills)
+        self.skills = normalize_skill_map(self.skills, MAIN_SKILLS)
+        self.subskills = normalize_skill_map(self.subskills, SUB_SKILLS)
         self.prefs_skills    = normalize_prefs(self.prefs_skills, MAIN_SKILLS)
         self.prefs_subskills = normalize_prefs(self.prefs_subskills, SUB_SKILLS)
         self.ensure_stat_defaults()
