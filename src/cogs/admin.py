@@ -1,7 +1,11 @@
 from __future__ import annotations
 
-import discord, json, os
+import json
+import logging
+import os
 from typing import Any, Dict, Optional
+
+import discord
 from discord import app_commands
 from discord.ext import commands
 
@@ -9,8 +13,14 @@ BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 CONFIG_PATH = os.path.join(os.path.dirname(BASE_DIR), "config.json")
 
 def load_cfg() -> Dict[str, Any]:
-    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError) as error:
+        logging.getLogger(__name__).warning(
+            "Не удалось загрузить config.json: %s", error
+        )
+        return {}
     if isinstance(data, dict):
         return data
     return {}
