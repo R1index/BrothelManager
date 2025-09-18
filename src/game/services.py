@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import random
 import time
+from pathlib import Path
 from typing import Iterable, List, Optional, Tuple
 
 from .repository import DataStore
@@ -35,21 +36,54 @@ class GameService:
     def __init__(self, store: DataStore | None = None):
         self.store = store or DataStore()
         self._config_cache: dict | None = None
+        self._config_cache_key: tuple[str, int | None] | None = None
+        self._config_path: Path | None = None
+        self._config_default_base = self.store.base_dir
         self._balance_cache: BalanceProfile | None = None
 
     def _load_config(self) -> dict:
         from .. import assets_util
 
-        if self._config_cache is not None:
+        candidates: list[Path] = []
+        if self._config_path is not None:
+            candidates.append(self._config_path)
+
+        default_path = (self._config_default_base / "config.json").resolve()
+        if default_path not in candidates:
+            candidates.append(default_path)
+
+        current_path = (self.store.base_dir / "config.json").resolve()
+        if current_path not in candidates:
+            candidates.append(current_path)
+
+        path = candidates[0]
+        mtime: int | None = None
+        for candidate in candidates:
+            try:
+                current_mtime = candidate.stat().st_mtime_ns
+            except FileNotFoundError:
+                continue
+
+            path = candidate
+            mtime = current_mtime
+            if self._config_path != candidate:
+                self._config_path = candidate
+            break
+
+        cache_key = (str(path), mtime)
+
+        if self._config_cache is not None and self._config_cache_key == cache_key:
             assets_util.set_assets_dir(self.store.assets_dir)
             return self._config_cache
 
-        path = self.store.base_dir / "config.json"
-        try:
-            with path.open("r", encoding="utf-8") as handle:
-                data = json.load(handle)
-        except (FileNotFoundError, json.JSONDecodeError):
+        if mtime is None:
             data = {}
+        else:
+            try:
+                with path.open("r", encoding="utf-8") as handle:
+                    data = json.load(handle)
+            except (FileNotFoundError, json.JSONDecodeError):
+                data = {}
 
         if not isinstance(data, dict):
             data = {}
@@ -59,6 +93,7 @@ class GameService:
         assets_util.set_assets_dir(self.store.assets_dir)
 
         self._config_cache = data
+        self._config_cache_key = cache_key
         self._balance_cache = None
         return self._config_cache
 
@@ -171,14 +206,12 @@ class GameService:
             return prefix, None
         return prefix, counter
 
-    def _alloc_girl_uid(self, base_id: str | int, girls: Iterable[Girl] | None = None) -> str:
-        normalized_base = self._normalize_base_id(base_id)
-        used: set[int] = set()
-        if girls is None:
-            girls_iter: Iterable[Girl | dict] = ()
-        else:
-            girls_iter = girls
-        for existing in girls_iter:
+    def _collect_uid_usage(self, girls: Iterable[Girl | dict] | None) -> dict[str, set[int]]:
+        usage: dict[str, set[int]] = {}
+        if not girls:
+            return usage
+
+        for existing in girls:
             if isinstance(existing, Girl):
                 existing_uid = existing.uid
                 existing_base = existing.base_id
@@ -190,25 +223,71 @@ class GameService:
 
             prefix, counter = self._split_uid_counter(existing_uid)
             existing_base_norm = self._normalize_base_id(existing_base)
+            stripped_uid = existing_uid.strip() if isinstance(existing_uid, str) else ""
 
-            matches_base = False
-            if normalized_base:
-                if prefix == normalized_base or existing_base_norm == normalized_base:
-                    matches_base = True
+            keys = {existing_base_norm or "", prefix or ""}
+            for key in keys:
+                used = usage.setdefault(key, set())
+                if counter is not None:
+                    used.add(counter)
+                elif stripped_uid == key:
+                    used.add(1)
+
+        return usage
+
+    def _alloc_girl_uid(
+        self,
+        base_id: str | int,
+        girls: Iterable[Girl] | None = None,
+        uid_usage: dict[str, set[int]] | None = None,
+    ) -> str:
+        normalized_base = self._normalize_base_id(base_id)
+        key = normalized_base or ""
+
+        if uid_usage is not None:
+            used = uid_usage.setdefault(key, set())
+        else:
+            used: set[int] = set()
+            girls_iter: Iterable[Girl | dict]
+            if girls is None:
+                girls_iter = ()
             else:
-                if prefix == "" or existing_base_norm == "":
-                    matches_base = True
-            if not matches_base:
-                continue
+                girls_iter = girls
+            for existing in girls_iter:
+                if isinstance(existing, Girl):
+                    existing_uid = existing.uid
+                    existing_base = existing.base_id
+                elif isinstance(existing, dict):
+                    existing_uid = existing.get("uid")
+                    existing_base = existing.get("base_id")
+                else:
+                    continue
 
-            if counter is not None:
-                used.add(counter)
-            elif isinstance(existing_uid, str) and existing_uid.strip() == normalized_base:
-                used.add(1)
+                prefix, counter = self._split_uid_counter(existing_uid)
+                existing_base_norm = self._normalize_base_id(existing_base)
+
+                matches_base = False
+                if normalized_base:
+                    if prefix == normalized_base or existing_base_norm == normalized_base:
+                        matches_base = True
+                else:
+                    if prefix == "" or existing_base_norm == "":
+                        matches_base = True
+                if not matches_base:
+                    continue
+
+                if counter is not None:
+                    used.add(counter)
+                elif isinstance(existing_uid, str) and existing_uid.strip() == normalized_base:
+                    used.add(1)
 
         counter = 1
         while counter in used:
             counter += 1
+
+        if uid_usage is not None:
+            used.add(counter)
+
         if normalized_base:
             return f"{normalized_base}#{counter}"
         return f"#{counter}"
@@ -282,7 +361,8 @@ class GameService:
         player.renown = starter_renown
         brothel.renown = starter_renown
 
-        girl_uid = self._alloc_girl_uid(base_entry["id"], player.girls)
+        uid_usage = self._collect_uid_usage(player.girls)
+        girl_uid = self._alloc_girl_uid(base_entry["id"], player.girls, uid_usage=uid_usage)
         girl = self._make_girl_from_catalog_entry(base_entry, uid=girl_uid)
         player.girls.append(girl)
 
@@ -323,22 +403,25 @@ class GameService:
         if not entries:
             raise RuntimeError("Girls catalog is empty.")
 
+        weights = [
+            {"R": 70, "SR": 20, "SSR": 9, "UR": 1}.get(entry.get("rarity", "R"), 1)
+            for entry in entries
+        ]
+
         def pick_entry() -> dict:
-            weights = [
-                {"R": 70, "SR": 20, "SSR": 9, "UR": 1}.get(entry.get("rarity", "R"), 1)
-                for entry in entries
-            ]
-            choice = random.choices(range(len(entries)), weights=weights, k=1)[0]
-            return entries[choice]
+            return random.choices(entries, weights=weights, k=1)[0]
 
         original_currency = player.currency
         original_girls_len = len(player.girls)
         added: List[Girl] = []
+        uid_usage = self._collect_uid_usage(player.girls)
 
         try:
             for _ in range(times):
                 base_entry = pick_entry()
-                girl_uid = self._alloc_girl_uid(base_entry["id"], player.girls)
+                girl_uid = self._alloc_girl_uid(
+                    base_entry["id"], player.girls, uid_usage=uid_usage
+                )
                 girl = self._make_girl_from_catalog_entry(base_entry, uid=girl_uid)
                 player.girls.append(girl)
                 added.append(girl)

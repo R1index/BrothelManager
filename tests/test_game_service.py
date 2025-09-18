@@ -1,5 +1,6 @@
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -94,6 +95,61 @@ class ConfigOverridesTests(unittest.TestCase):
     def test_jobs_per_level_influences_market_size(self):
         market = self.service.generate_market(uid=42, forced_level=1)
         self.assertEqual(len(market.jobs), 4)
+
+    def test_config_changes_are_observed_on_disk(self):
+        self.service.config  # trigger initial load and caching
+        time.sleep(0.01)
+        _write_config(
+            self.base_path,
+            {
+                "paths": {
+                    "data_dir": "save_data",
+                    "catalog": "configs/catalog.json",
+                    "assets": "art/girls",
+                },
+                "market": {"jobs_per_level": 3, "refresh_minutes": 3},
+            },
+        )
+
+        market = self.service.generate_market(uid=13, forced_level=1)
+        self.assertEqual(len(market.jobs), 6)
+
+    def test_config_reload_survives_base_dir_override(self):
+        override_root = self.base_path / "override_root"
+        override_root.mkdir(parents=True, exist_ok=True)
+
+        _write_config(
+            self.base_path,
+            {
+                "paths": {
+                    "base_dir": "override_root",
+                    "data_dir": "save_data",
+                    "catalog": "configs/catalog.json",
+                    "assets": "art/girls",
+                },
+                "market": {"jobs_per_level": 2, "refresh_minutes": 3},
+            },
+        )
+
+        first_market = self.service.generate_market(uid=21, forced_level=1)
+        self.assertEqual(len(first_market.jobs), 4)
+
+        time.sleep(0.01)
+        _write_config(
+            self.base_path,
+            {
+                "paths": {
+                    "base_dir": "override_root",
+                    "data_dir": "save_data",
+                    "catalog": "configs/catalog.json",
+                    "assets": "art/girls",
+                },
+                "market": {"jobs_per_level": 4, "refresh_minutes": 3},
+            },
+        )
+
+        refreshed_market = self.service.generate_market(uid=22, forced_level=1)
+        self.assertEqual(len(refreshed_market.jobs), 8)
 
 
 class ResolveJobTests(unittest.TestCase):
