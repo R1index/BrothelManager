@@ -352,7 +352,7 @@ def test_girls_lists_owned_girls(monkeypatch):
     core.bot = MagicMock()
 
     girl = SimpleNamespace()
-    brothel = SimpleNamespace()
+    brothel = SimpleNamespace(apply_decay=lambda: None, renown=42)
     player = SimpleNamespace(girls=[girl], ensure_brothel=lambda: brothel)
     monkeypatch.setattr("src.cogs.core.load_player", lambda uid: player)
     save_mock = MagicMock()
