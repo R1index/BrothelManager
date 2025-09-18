@@ -214,6 +214,59 @@ class ConfigOverridesTests(unittest.TestCase):
         self.assertEqual(len(refreshed_market.jobs), 8)
         self.assertEqual(self.store.base_dir, expected_override_base)
 
+    def test_base_dir_override_removed_resets_to_defaults(self):
+        override_root = self.base_path / "override_root"
+        override_root.mkdir(parents=True, exist_ok=True)
+        expected_override_base = override_root.resolve()
+        expected_default_base = self.base_path.resolve()
+
+        _write_config(
+            self.base_path,
+            {
+                "paths": {
+                    "base_dir": "override_root",
+                }
+            },
+        )
+
+        # Применяем оверрайд и убеждаемся, что все директории смещены.
+        self.service.config
+        self.assertEqual(self.store.base_dir, expected_override_base)
+        self.assertEqual(self.store.data_dir, expected_override_base / "data")
+        self.assertEqual(self.store.users_dir, expected_override_base / "data" / "users")
+        self.assertEqual(self.store.market_dir, expected_override_base / "data" / "markets")
+        self.assertEqual(
+            self.store.catalog_path,
+            expected_override_base / "data" / "girls_catalog.json",
+        )
+        self.assertEqual(
+            self.store.assets_dir,
+            expected_override_base / "assets" / "girls",
+        )
+
+        time.sleep(0.01)
+        _write_config(
+            self.base_path,
+            {
+                "paths": {},
+            },
+        )
+
+        # После удаления base_dir должны использоваться стандартные директории.
+        self.service.config
+        self.assertEqual(self.store.base_dir, expected_default_base)
+        self.assertEqual(self.store.data_dir, expected_default_base / "data")
+        self.assertEqual(self.store.users_dir, expected_default_base / "data" / "users")
+        self.assertEqual(self.store.market_dir, expected_default_base / "data" / "markets")
+        self.assertEqual(
+            self.store.catalog_path,
+            expected_default_base / "data" / "girls_catalog.json",
+        )
+        self.assertEqual(
+            self.store.assets_dir,
+            expected_default_base / "assets" / "girls",
+        )
+
 
 class ResolveJobTests(unittest.TestCase):
     def setUp(self):

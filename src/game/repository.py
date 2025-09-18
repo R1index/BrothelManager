@@ -51,10 +51,11 @@ class DataStore:
             return
 
         base_override = paths.get("base_dir")
-        base_dir = self.base_dir
         if base_override is not None:
             base_dir = self._coerce_path(base_override, self._base_anchor)
-            self.base_dir = base_dir
+        else:
+            base_dir = self._base_anchor
+        self.base_dir = base_dir
 
         data_dir_value = paths.get("data_dir")
         users_dir_value = paths.get("users_dir") or paths.get("users")
@@ -96,14 +97,14 @@ class DataStore:
         if catalog_value is not None:
             self.catalog_path = self._coerce_path(catalog_value, base_dir)
         else:
-            self.catalog_path = self.data_dir / "girls_catalog.json"
+            self.catalog_path = data_dir / "girls_catalog.json"
         self._catalog_cache = None
         self._catalog_mtime = None
 
         if assets_value is not None:
             self.assets_dir = self._coerce_path(assets_value, base_dir)
         else:
-            self.assets_dir = self.base_dir / "assets" / "girls"
+            self.assets_dir = base_dir / "assets" / "girls"
 
         self._ensure_dirs()
 
