@@ -540,9 +540,24 @@ def test_heal_process(monkeypatch):
     core = Core.__new__(Core)
     core.bot = MagicMock()
 
+    class DummyBrothel:
+        def __init__(self):
+            self.renown = 150
+            self.decay_applied = False
+
+        def apply_decay(self):
+            self.decay_applied = True
+            self.renown -= 10
+
+    brothel = DummyBrothel()
+
+    def regen_side_effect(b):
+        assert b is brothel
+        assert brothel.decay_applied
+
     girl = SimpleNamespace(
         normalize_skill_structs=MagicMock(),
-        apply_regen=MagicMock(),
+        apply_regen=MagicMock(side_effect=regen_side_effect),
         health=40,
         health_max=100,
         level=10,
@@ -550,8 +565,9 @@ def test_heal_process(monkeypatch):
     )
     player = SimpleNamespace(
         currency=1000,
+        renown=999,
         get_girl=lambda uid: girl,
-        ensure_brothel=lambda: SimpleNamespace(),
+        ensure_brothel=lambda: brothel,
     )
 
     monkeypatch.setattr("src.cogs.core.load_player", lambda uid: player)
@@ -563,6 +579,8 @@ def test_heal_process(monkeypatch):
     asyncio.run(core.heal.callback(core, interaction, girl_id="g1", amount=20))
 
     save_mock.assert_called_once_with(player)
+    girl.apply_regen.assert_called_once_with(brothel)
+    assert player.renown == brothel.renown
     message = _sent_message(interaction.response.send_message)
     assert message and "Restored" in message
 
@@ -570,6 +588,17 @@ def test_heal_process(monkeypatch):
 def test_heal_checks_coins(monkeypatch):
     core = Core.__new__(Core)
     core.bot = MagicMock()
+
+    class DummyBrothel:
+        def __init__(self):
+            self.renown = 70
+            self.decay_applied = False
+
+        def apply_decay(self):
+            self.decay_applied = True
+            self.renown -= 5
+
+    brothel = DummyBrothel()
 
     girl = SimpleNamespace(
         normalize_skill_structs=MagicMock(),
@@ -581,8 +610,9 @@ def test_heal_checks_coins(monkeypatch):
     )
     player = SimpleNamespace(
         currency=10,
+        renown=120,
         get_girl=lambda uid: girl,
-        ensure_brothel=lambda: SimpleNamespace(),
+        ensure_brothel=lambda: brothel,
     )
 
     monkeypatch.setattr("src.cogs.core.load_player", lambda uid: player)
@@ -592,6 +622,8 @@ def test_heal_checks_coins(monkeypatch):
     asyncio.run(core.heal.callback(core, interaction, girl_id="g1", amount=20))
 
     message = _sent_message(interaction.response.send_message)
+    assert brothel.decay_applied
+    assert player.renown == brothel.renown
     assert message and "Not enough coins" in message
 
 
