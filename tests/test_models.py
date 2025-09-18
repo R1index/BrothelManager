@@ -126,5 +126,45 @@ class BrothelHygieneTests(unittest.TestCase):
         self.assertLessEqual(high_loss, low_loss)
 
 
+class BrothelJobOutcomeTests(unittest.TestCase):
+    def test_register_job_outcome_returns_deltas(self):
+        job = Job(
+            job_id="delta-test",
+            demand_main="Human",
+            demand_level=1,
+            demand_sub="VAGINAL",
+            demand_sub_level=1,
+            pay=150,
+            difficulty=2,
+        )
+        brothel = BrothelState(
+            hygiene_level=5,
+            cleanliness=78,
+            morale=65,
+            renown=90,
+            upkeep_pool=120,
+        )
+
+        cleanliness_before = brothel.cleanliness
+        morale_before = brothel.morale
+        renown_before = brothel.renown
+        upkeep_before = brothel.upkeep_pool
+
+        deltas = brothel.register_job_outcome(success=True, injured=True, job=job, reward=180)
+
+        self.assertIsInstance(deltas, dict)
+        self.assertIn("cleanliness", deltas)
+        self.assertIn("morale", deltas)
+        self.assertIn("renown", deltas)
+        self.assertIn("upkeep", deltas)
+
+        self.assertEqual(deltas["cleanliness"], brothel.cleanliness - cleanliness_before)
+        self.assertEqual(deltas["morale"], brothel.morale - morale_before)
+        self.assertEqual(deltas["renown"], brothel.renown - renown_before)
+        self.assertEqual(deltas["upkeep"], brothel.upkeep_pool - upkeep_before)
+
+        self.assertLessEqual(deltas["cleanliness"], 0)
+        self.assertGreaterEqual(deltas["upkeep"], 0)
+
 if __name__ == "__main__":
     unittest.main()

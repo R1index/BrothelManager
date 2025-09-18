@@ -950,13 +950,21 @@ class GameService:
             vitality_xp_gain += max(1, injury_amount // 4)
         girl.gain_vitality_xp(int(vitality_xp_gain))
 
-        brothel.register_job_outcome(success, injured, job, reward)
-        brothel_diff = {
-            "cleanliness": brothel.cleanliness - clean_before,
-            "morale": brothel.morale - morale_before,
-            "renown": player.renown - renown_before,
-            "upkeep": brothel.upkeep_pool - pool_before,
-        }
+        brothel_diff = brothel.register_job_outcome(success, injured, job, reward)
+        if not isinstance(brothel_diff, dict):
+            brothel_diff = {}
+        upkeep_delta = brothel.upkeep_pool - pool_before
+        if "upkeep" not in brothel_diff:
+            brothel_diff["upkeep"] = upkeep_delta
+        renown_delta_value = player.renown - renown_before
+        if renown_delta_value:
+            brothel_diff["renown"] = brothel_diff.get("renown", 0) + renown_delta_value
+        cleanliness_delta = brothel.cleanliness - clean_before
+        if "cleanliness" not in brothel_diff:
+            brothel_diff["cleanliness"] = cleanliness_delta
+        morale_delta = brothel.morale - morale_before
+        if "morale" not in brothel_diff:
+            brothel_diff["morale"] = morale_delta
 
         return {
             "ok": success,
