@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import random
 import time
+from pathlib import Path
 from typing import Iterable, List, Optional, Tuple
 
 from .repository import DataStore
@@ -36,17 +37,38 @@ class GameService:
         self.store = store or DataStore()
         self._config_cache: dict | None = None
         self._config_cache_key: tuple[str, int | None] | None = None
+        self._config_path: Path | None = None
+        self._config_default_base = self.store.base_dir
         self._balance_cache: BalanceProfile | None = None
 
     def _load_config(self) -> dict:
         from .. import assets_util
 
-        path = (self.store.base_dir / "config.json").resolve()
+        candidates: list[Path] = []
+        if self._config_path is not None:
+            candidates.append(self._config_path)
 
-        try:
-            mtime = path.stat().st_mtime_ns
-        except FileNotFoundError:
-            mtime = None
+        default_path = (self._config_default_base / "config.json").resolve()
+        if default_path not in candidates:
+            candidates.append(default_path)
+
+        current_path = (self.store.base_dir / "config.json").resolve()
+        if current_path not in candidates:
+            candidates.append(current_path)
+
+        path = candidates[0]
+        mtime: int | None = None
+        for candidate in candidates:
+            try:
+                current_mtime = candidate.stat().st_mtime_ns
+            except FileNotFoundError:
+                continue
+
+            path = candidate
+            mtime = current_mtime
+            if self._config_path != candidate:
+                self._config_path = candidate
+            break
 
         cache_key = (str(path), mtime)
 
