@@ -174,6 +174,10 @@ class ConfigOverridesTests(unittest.TestCase):
     def test_config_reload_survives_base_dir_override(self):
         override_root = self.base_path / "override_root"
         override_root.mkdir(parents=True, exist_ok=True)
+        expected_initial_base = self.base_path.resolve()
+        expected_override_base = override_root.resolve()
+
+        self.assertEqual(self.store.base_dir, expected_initial_base)
 
         _write_config(
             self.base_path,
@@ -190,6 +194,7 @@ class ConfigOverridesTests(unittest.TestCase):
 
         first_market = self.service.generate_market(uid=21, forced_level=1)
         self.assertEqual(len(first_market.jobs), 4)
+        self.assertEqual(self.store.base_dir, expected_override_base)
 
         time.sleep(0.01)
         _write_config(
@@ -207,6 +212,7 @@ class ConfigOverridesTests(unittest.TestCase):
 
         refreshed_market = self.service.generate_market(uid=22, forced_level=1)
         self.assertEqual(len(refreshed_market.jobs), 8)
+        self.assertEqual(self.store.base_dir, expected_override_base)
 
 
 class ResolveJobTests(unittest.TestCase):

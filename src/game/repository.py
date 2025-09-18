@@ -18,7 +18,9 @@ class DataStore:
             resolved_base = Path(base_dir).expanduser()
             if not resolved_base.is_absolute():
                 resolved_base = default_base / resolved_base
-        self.base_dir = resolved_base.resolve()
+        resolved_base = resolved_base.resolve()
+        self.base_dir = resolved_base
+        self._base_anchor = resolved_base
         self.data_dir = self.base_dir / "data"
         self.users_dir = self.data_dir / "users"
         self.market_dir = self.data_dir / "markets"
@@ -49,10 +51,10 @@ class DataStore:
             return
 
         base_override = paths.get("base_dir")
-        if base_override is not None:
-            self.base_dir = self._coerce_path(base_override, self.base_dir)
-
         base_dir = self.base_dir
+        if base_override is not None:
+            base_dir = self._coerce_path(base_override, self._base_anchor)
+            self.base_dir = base_dir
 
         data_dir_value = paths.get("data_dir")
         users_dir_value = paths.get("users_dir") or paths.get("users")
