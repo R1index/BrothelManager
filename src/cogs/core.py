@@ -71,6 +71,27 @@ from ..game.views import MarketWorkView, Paginator, TopLeaderboardView
 
 BROTHEL_ALLOWED_ACTIONS = {"view", "upgrade", "maintain", "promote", "expand"}
 
+TRAIN_ACTION_CHOICES = [
+    app_commands.Choice(name="List mentorships", value="list"),
+    app_commands.Choice(name="Assign mentorship", value="assign"),
+    app_commands.Choice(name="Finish mentorship", value="finish"),
+]
+
+TRAIN_FOCUS_TYPE_CHOICES = [
+    app_commands.Choice(name="Main skill", value="main"),
+    app_commands.Choice(name="Sub-skill", value="sub"),
+]
+
+TRAIN_MAIN_SKILL_CHOICES = [
+    app_commands.Choice(name=skill, value=skill)
+    for skill in MAIN_SKILLS
+]
+
+TRAIN_SUB_SKILL_CHOICES = [
+    app_commands.Choice(name=skill.title(), value=skill)
+    for skill in SUB_SKILLS
+]
+
 
 MIN_TRAINING_SECONDS = 15 * 60
 
@@ -404,9 +425,9 @@ class Core(commands.Cog):
 
     @staticmethod
     def _resolve_training_focus(
-        focus_type: Optional[app_commands.Choice[str]],
-        main_skill: Optional[app_commands.Choice[str]],
-        sub_skill: Optional[app_commands.Choice[str]],
+        focus_type: app_commands.Choice[str] | str | None,
+        main_skill: app_commands.Choice[str] | str | None,
+        sub_skill: app_commands.Choice[str] | str | None,
     ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
         main_choice = choice_value(main_skill)
         sub_choice = choice_value(sub_skill)
@@ -774,16 +795,22 @@ class Core(commands.Cog):
             embeds=embeds[:10],
         )
 
+    @app_commands.choices(
+        action=TRAIN_ACTION_CHOICES,
+        focus_type=TRAIN_FOCUS_TYPE_CHOICES,
+        main_skill=TRAIN_MAIN_SKILL_CHOICES,
+        sub_skill=TRAIN_SUB_SKILL_CHOICES,
+    )
     @app_commands.command(name="train", description="Manage mentorship training assignments")
     async def train(
         self,
         interaction: discord.Interaction,
-        action: app_commands.Choice[str] | None = None,
+        action: str | None = None,
         mentor: Optional[str] = None,
         student: Optional[str] = None,
-        focus_type: Optional[app_commands.Choice[str]] = None,
-        main_skill: Optional[app_commands.Choice[str]] = None,
-        sub_skill: Optional[app_commands.Choice[str]] = None,
+        focus_type: str | None = None,
+        main_skill: str | None = None,
+        sub_skill: str | None = None,
     ):
         pl, brothel = await self._prepare_player(interaction, regen_girls=True)
         if not pl:
