@@ -916,6 +916,8 @@ class Core(commands.Cog):
             return
 
         brothel = pl.ensure_brothel()
+        brothel.apply_decay()
+        pl.renown = brothel.renown
 
         pages: list[discord.Embed] = []
         files: list[str | None] = []
@@ -928,9 +930,9 @@ class Core(commands.Cog):
                 files.append(None)
             pages.append(embed)
 
-        save_player(pl)
         view = Paginator(pages, interaction.user.id, timeout=120, files=files)
         await view.send(interaction)
+        save_player(pl)
 
     @app_commands.command(name="top", description="Show leaderboards for brothels or girls")
     @app_commands.choices(
