@@ -1124,6 +1124,8 @@ class Core(commands.Cog):
             return
 
         brothel = pl.ensure_brothel()
+        brothel.apply_decay()
+        pl.renown = brothel.renown
         girl.normalize_skill_structs()
         girl.apply_regen(brothel)
 
