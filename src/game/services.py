@@ -35,21 +35,33 @@ class GameService:
     def __init__(self, store: DataStore | None = None):
         self.store = store or DataStore()
         self._config_cache: dict | None = None
+        self._config_cache_key: tuple[str, int | None] | None = None
         self._balance_cache: BalanceProfile | None = None
 
     def _load_config(self) -> dict:
         from .. import assets_util
 
-        if self._config_cache is not None:
+        path = (self.store.base_dir / "config.json").resolve()
+
+        try:
+            mtime = path.stat().st_mtime_ns
+        except FileNotFoundError:
+            mtime = None
+
+        cache_key = (str(path), mtime)
+
+        if self._config_cache is not None and self._config_cache_key == cache_key:
             assets_util.set_assets_dir(self.store.assets_dir)
             return self._config_cache
 
-        path = self.store.base_dir / "config.json"
-        try:
-            with path.open("r", encoding="utf-8") as handle:
-                data = json.load(handle)
-        except (FileNotFoundError, json.JSONDecodeError):
+        if mtime is None:
             data = {}
+        else:
+            try:
+                with path.open("r", encoding="utf-8") as handle:
+                    data = json.load(handle)
+            except (FileNotFoundError, json.JSONDecodeError):
+                data = {}
 
         if not isinstance(data, dict):
             data = {}
@@ -59,6 +71,7 @@ class GameService:
         assets_util.set_assets_dir(self.store.assets_dir)
 
         self._config_cache = data
+        self._config_cache_key = cache_key
         self._balance_cache = None
         return self._config_cache
 
